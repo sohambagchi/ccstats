@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ccstats</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --ring: rgba(11,11,11,0.10);
+  --s1: #2a78d6; --s2: #eb6834; --critical: #d03b3b;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10);
+    --s1: #3987e5; --s2: #d95926;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10);
+  --s1: #3987e5; --s2: #d95926;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 1180px; margin: 0 auto; padding: 20px 16px 48px; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-bottom: 12px; }
+h1 { font-size: 18px; margin: 0; font-weight: 600; }
+h2 { font-size: 14px; font-weight: 600; margin: 0 0 2px; }
+.sub { color: var(--ink-2); font-size: 12px; }
+.filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 16px; }
+select, button { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--ring); border-radius: 6px; padding: 5px 8px; }
+button { cursor: pointer; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.tile, .card { background: var(--surface); border: 1px solid var(--ring); border-radius: 10px; padding: 12px 14px; }
+.tile .label { color: var(--ink-2); font-size: 12px; }
+.tile .value { font-size: 22px; font-weight: 600; margin-top: 2px; }
+.tile.hero .value { font-size: 48px; line-height: 1.05; }
+.tile.hero { grid-column: span 2; }
+.tile .note { color: var(--muted); font-size: 12px; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; margin-bottom: 12px; }
+.card { min-width: 0; }
+.legend { display: flex; gap: 14px; font-size: 12px; color: var(--ink-2); margin: 4px 0 6px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+svg { display: block; width: 100%; overflow: visible; }
+svg text { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.bar:hover, .bar:focus { opacity: .8; outline: none; }
+.loading { opacity: .5; transition: opacity .2s; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; color: var(--ink-2); font-weight: 500; border-bottom: 1px solid var(--axis); padding: 5px 6px; white-space: nowrap; }
+td { border-bottom: 1px solid var(--grid); padding: 5px 6px; font-variant-numeric: tabular-nums; }
+td.n, th.n { text-align: right; }
+.scroll { overflow-x: auto; }
+details { margin-top: 6px; } summary { color: var(--ink-2); font-size: 12px; cursor: pointer; }
+.hbar { display: grid; grid-template-columns: minmax(70px, 130px) 1fr 56px; align-items: center; gap: 8px; font-size: 12px; padding: 2px 0; }
+.hbar .track { height: 10px; }
+.hbar .fill { height: 10px; background: var(--s1); border-radius: 0 4px 4px 0; min-width: 2px; }
+.hbar .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-2); }
+.hbar .num { text-align: right; font-variant-numeric: tabular-nums; }
+#tip { position: fixed; pointer-events: none; background: var(--surface); border: 1px solid var(--ring); border-radius: 8px; padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,.12); display: none; z-index: 10; min-width: 140px; }
+#tip .t { color: var(--ink-2); margin-bottom: 4px; }
+#tip .row { display: flex; align-items: center; gap: 6px; }
+#tip .row b { margin-left: auto; padding-left: 12px; }
+#tip .key { width: 10px; height: 2px; }
+.err { color: var(--critical); }
+@media (max-width: 520px) { .tile.hero { grid-column: span 1; } .tile.hero .value { font-size: 40px; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Claude Code usage</h1>
+    <span class="sub" id="status">loading…</span>
+  </header>
+  <div class="filters" role="group" aria-label="Filters">
+    <select id="days" aria-label="Date range">
+      <option value="1">Today</option><option value="7">Last 7 days</option>
+      <option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option><option value="">All time</option>
+    </select>
+    <select id="group" aria-label="Bucket"><option value="day">Daily</option><option value="week">Weekly</option><option value="month">Monthly</option></select>
+    <select id="host" aria-label="Host"><option value="">All hosts</option></select>
+    <select id="profile" aria-label="Profile"><option value="">All profiles</option></select>
+    <select id="project" aria-label="Project"><option value="">All projects</option></select>
+    <button id="refresh" title="Re-parse newly arrived transcripts">Refresh</button>
+  </div>
+
+  <section class="tiles" id="tiles"></section>
+
+  <section class="grid2">
+    <div class="card">
+      <h2>Claude time</h2>
+      <div class="sub">Main thread, from prompt to control returning; decision waits excluded</div>
+      <div class="legend"><span><i style="background:var(--s1)"></i>Model in flight</span><span><i style="background:var(--s2)"></i>Tools running</span></div>
+      <div id="chart-time"></div>
+      <details><summary>Table</summary><div class="scroll" id="table-time"></div></details>
+    </div>
+    <div class="card">
+      <h2>Tokens, excluding cache reads</h2>
+      <div class="sub">Input + output + cache writes</div>
+      <div class="legend"><span><i style="background:var(--s1)"></i>Main sessions</span><span><i style="background:var(--s2)"></i>Subagents</span></div>
+      <div id="chart-tokens"></div>
+      <details><summary>Table</summary><div class="scroll" id="table-tokens"></div></details>
+    </div>
+  </section>
+
+  <section class="grid2">
+    <div class="card"><h2>Tool calls</h2><div class="sub" id="tools-sub"></div><div id="tools"></div></div>
+    <div class="card"><h2>Bash commands</h2><div class="sub">By the program each command runs</div><div id="bash"></div></div>
+  </section>
+
+  <section class="card" style="margin-bottom:12px">
+    <h2>By host and profile</h2>
+    <div class="scroll" id="hosts"></div>
+  </section>
+
+  <section class="card">
+    <h2>Recent sessions</h2>
+    <div class="scroll" id="sessions"></div>
+  </section>
+</main>
+<div id="tip" role="tooltip"></div>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const state = { dims: null };
+
+function fmtNum(n) {
+  n = n || 0;
+  if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(1) + "B";
+  if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(1) + "M";
+  if (Math.abs(n) >= 1e4) return (n / 1e3).toFixed(1) + "K";
+  return Math.round(n).toLocaleString();
+}
+function fmtDur(s) {
+  s = Math.round(s || 0);
+  if (s >= 3600) return Math.floor(s / 3600) + "h " + String(Math.floor(s % 3600 / 60)).padStart(2, "0") + "m";
+  if (s >= 60) return Math.floor(s / 60) + "m";
+  return s + "s";
+}
+function el(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, v);
+  for (const k of kids) e.append(k instanceof Node ? k : document.createTextNode(k ?? ""));
+  return e;
+}
+function svgEl(tag, attrs) {
+  const e = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, v);
+  return e;
+}
+function query() {
+  const p = new URLSearchParams();
+  for (const k of ["days", "host", "profile", "project"]) if ($(k).value) p.set(k, $(k).value);
+  return p;
+}
+async function api(path, extra) {
+  const p = query();
+  for (const [k, v] of Object.entries(extra || {})) p.set(k, v);
+  const r = await fetch(path + "?" + p.toString());
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+  return r.json();
+}
+
+// Tooltip: value first, series second, keyed by a short line in the series color.
+const tip = $("tip");
+function showTip(ev, title, rows) {
+  tip.replaceChildren(el("div", { class: "t" }, title));
+  for (const [label, value, color] of rows) {
+    const key = el("span", { class: "key" }); key.style.background = color || "transparent";
+    tip.append(el("div", { class: "row" }, key, el("span", {}, label), el("b", {}, value)));
+  }
+  tip.style.display = "block";
+  const x = Math.min(ev.clientX + 14, window.innerWidth - tip.offsetWidth - 8);
+  const y = Math.min(ev.clientY + 14, window.innerHeight - tip.offsetHeight - 8);
+  tip.style.left = x + "px"; tip.style.top = y + "px";
+}
+function hideTip() { tip.style.display = "none"; }
+
+// Axis steps: clean numbers for counts, clock-friendly ones for minutes.
+const NUM_STEPS = [];
+for (let e = 0; e < 13; e++) for (const m of [1, 2, 2.5, 5]) NUM_STEPS.push(m * 10 ** e);
+const MIN_STEPS = [1, 2, 5, 10, 15, 20, 30, 60, 120, 180, 240, 360, 480, 720, 1440];
+function niceScale(max, steps) {
+  const raw = Math.max(max, 1e-9) / 4, last = steps[steps.length - 1];
+  const step = steps.find((s) => s >= raw) ?? last * Math.ceil(raw / last);
+  return { step, top: Math.max(step, Math.ceil(max / step) * step) };
+}
+
+// Every day from first to last inclusive, so idle days show as gaps.
+function shiftDay(day, n) {
+  const d = new Date(day + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10);
+}
+function dayRange(first, last) {
+  const out = [];
+  for (let d = new Date(first + "T00:00:00Z"); d <= new Date(last + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() + 1)) out.push(d.toISOString().slice(0, 10));
+  return out;
+}
+
+// Stacked columns: two series, 2px surface gap between segments, 4px rounded top.
+function stackedColumns(container, buckets, series, fmt, steps) {
+  container.replaceChildren();
+  const W = Math.max(container.clientWidth, 300), H = 190, L = 44, B = 22, T = 8;
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, height: H, role: "img" });
+  const totals = buckets.map((b) => series.reduce((a, s) => a + (s.get(b) || 0), 0));
+  const { step, top: max } = niceScale(Math.max(0, ...totals), steps);
+  const y = (v) => H - B - (v / max) * (H - B - T);
+  for (let i = 0; Math.round(i * step * 1e6) <= Math.round(max * 1e6); i++) {
+    const v = step * i, yy = y(v);
+    svg.append(svgEl("line", { x1: L, x2: W, y1: yy, y2: yy, stroke: i ? "var(--grid)" : "var(--axis)", "stroke-width": 1 }));
+    const t = svgEl("text", { x: L - 6, y: yy + 4, "text-anchor": "end" }); t.textContent = fmt(v); svg.append(t);
+  }
+  if (!buckets.length) {
+    const t = svgEl("text", { x: W / 2, y: H / 2, "text-anchor": "middle" }); t.textContent = "No data in this range"; svg.append(t);
+    container.append(svg); return;
+  }
+  const slot = (W - L) / buckets.length, bw = Math.max(2, Math.min(24, slot * 0.7));
+  const labelEvery = Math.ceil(buckets.length / Math.max(1, Math.floor((W - L) / 64)));
+  buckets.forEach((b, i) => {
+    const cx = L + slot * i + slot / 2;
+    let base = 0;
+    const g = svgEl("g", { class: "bar", tabindex: 0 });
+    series.forEach((s, si) => {
+      const v = s.get(b) || 0;
+      if (v <= 0) return;
+      const y0 = y(base), y1 = y(base + v);
+      const top = si === series.length - 1 || series.slice(si + 1).every((s2) => !(s2.get(b) > 0));
+      const h = Math.max(0, y0 - y1 - (base > 0 ? 2 : 0));
+      const r = top ? Math.min(4, h, bw / 2) : 0;
+      const x0 = cx - bw / 2, yt = y1, yb = y1 + h;
+      const d = `M${x0},${yb} V${yt + r} Q${x0},${yt} ${x0 + r},${yt} H${x0 + bw - r} Q${x0 + bw},${yt} ${x0 + bw},${yt + r} V${yb} Z`;
+      g.append(svgEl("path", { d, fill: s.color }));
+      base += v;
+    });
+    // Hit target: the full column slot, not just the painted bar.
+    g.append(svgEl("rect", { x: L + slot * i, y: T, width: slot, height: H - B - T, fill: "transparent" }));
+    const rows = series.map((s) => [s.name, fmt(s.get(b) || 0), s.color]).concat([["Total", fmt(totals[i]), null]]);
+    g.addEventListener("pointermove", (ev) => showTip(ev, b, rows));
+    g.addEventListener("pointerleave", hideTip);
+    g.addEventListener("focus", () => { const r = g.getBoundingClientRect(); showTip({ clientX: r.right, clientY: r.top }, b, rows); });
+    g.addEventListener("blur", hideTip);
+    svg.append(g);
+    if (i % labelEvery === 0) {
+      const t = svgEl("text", { x: cx, y: H - 6, "text-anchor": "middle" });
+      t.textContent = b.length === 10 ? b.slice(5) : b; svg.append(t);
+    }
+  });
+  container.append(svg);
+}
+
+function table(container, headers, rows, numericFrom = 1) {
+  const thead = el("tr", {}, ...headers.map((h, i) => el("th", { class: i >= numericFrom ? "n" : "" }, h)));
+  const body = rows.map((r) => el("tr", {}, ...r.map((c, i) => el("td", { class: i >= numericFrom ? "n" : "" }, c))));
+  container.replaceChildren(el("table", {}, el("thead", {}, thead), el("tbody", {}, ...body)));
+}
+
+function hbars(container, items, labelKey, valueKey, extra) {
+  container.replaceChildren();
+  if (!items.length) { container.append(el("div", { class: "sub" }, "No calls in this range")); return; }
+  const max = Math.max(...items.map((i) => i[valueKey]));
+  for (const it of items) {
+    const fill = el("div", { class: "fill" }); fill.style.width = (100 * it[valueKey] / max) + "%";
+    const row = el("div", { class: "hbar", tabindex: 0 }, el("span", { class: "name", title: it[labelKey] }, it[labelKey]),
+                   el("div", { class: "track" }, fill), el("span", { class: "num" }, fmtNum(it[valueKey])));
+    const rows = [["Calls", it[valueKey].toLocaleString(), "var(--s1)"], ...extra(it)];
+    row.addEventListener("pointermove", (ev) => showTip(ev, it[labelKey], rows));
+    row.addEventListener("pointerleave", hideTip);
+    container.append(row);
+  }
+}
+
+function tile(label, value, note, hero) {
+  return el("div", { class: "tile" + (hero ? " hero" : "") }, el("div", { class: "label" }, label),
+            el("div", { class: "value" }, value), el("div", { class: "note" }, note || ""));
+}
+
+async function loadDims() {
+  const d = await api("/api/dimensions", {});
+  for (const k of ["host", "profile", "project"]) {
+    const sel = $(k), cur = sel.value;
+    sel.replaceChildren(sel.options[0]);
+    for (const v of d[k]) sel.append(el("option", { value: v }, v));
+    sel.value = d[k].includes(cur) ? cur : "";
+  }
+}
+
+async function render() {
+  document.querySelector("main").classList.add("loading");
+  try {
+    const group = $("group").value;
+    const [series, total, tools, sessions, byHost, health] = await Promise.all([
+      api("/api/summary", { group }), api("/api/summary", { group: "total" }), api("/api/tools", { top: 12 }),
+      api("/api/sessions", { limit: 25 }), api("/api/summary", { group: "total", by: "host" }), fetch("/api/health").then((r) => r.json()),
+    ]);
+    const t = total.rows[0] || { tokens: { main: {}, sub: {} } };
+    const tm = t.tokens.main, ts = t.tokens.sub;
+    const noCache = (x) => (x.input || 0) + (x.output || 0) + (x.cache_write || 0);
+    $("tiles").replaceChildren(
+      tile("Claude time", fmtDur(t.claude_s), `${fmtDur(t.api_s)} model in flight · ${fmtDur(t.agent_s)} in subagents`, true),
+      tile("Sessions", fmtNum(t.sessions), `${fmtNum(t.prompts)} prompts`),
+      tile("Subagents", fmtNum(t.subagents), t.subagents ? `peak ${t.peak_concurrent_subagents} at once · depth ≤ ${t.max_spawn_depth}` : ""),
+      tile("Tool calls", fmtNum(t.tool_calls), `${fmtNum(t.tool_errors)} errors · ${fmtNum(t.tool_background)} background`),
+      tile("Output tokens", fmtNum((tm.output || 0) + (ts.output || 0)), `${fmtNum((tm.thinking || 0) + (ts.thinking || 0))} thinking`),
+      tile("Tokens excl. cache reads", fmtNum(noCache(tm) + noCache(ts)), `+ ${fmtNum((tm.cache_read || 0) + (ts.cache_read || 0))} cache reads`),
+    );
+
+    const rows = series.rows, byB = new Map(rows.map((r) => [r.bucket, r]));
+    let buckets = rows.map((r) => r.bucket);
+    if (group === "day" && buckets.length) {
+      const today = new Intl.DateTimeFormat("en-CA", { timeZone: health.timezone }).format(new Date());
+      const days = Number($("days").value);
+      // A preset range spans its whole window; "all time" spans first to last active day.
+      buckets = days ? dayRange(shiftDay(today, 1 - days), today) : dayRange(buckets[0], buckets[buckets.length - 1]);
+    }
+    const tget = (f) => ({ get: (b) => (byB.has(b) ? f(byB.get(b)) : 0) });
+    stackedColumns($("chart-time"), buckets, [
+      { name: "Model in flight", color: "var(--s1)", ...tget((r) => r.api_s / 60) },
+      { name: "Tools running", color: "var(--s2)", ...tget((r) => Math.max(0, r.claude_s - r.api_s) / 60) },
+    ], (m) => fmtDur(m * 60), MIN_STEPS);
+    table($("table-time"), [group, "Claude", "Model", "Tools", "Subagents", "Prompts"],
+          rows.map((r) => [r.bucket, fmtDur(r.claude_s), fmtDur(r.api_s), fmtDur(r.claude_s - r.api_s), fmtDur(r.agent_s), r.prompts]));
+    stackedColumns($("chart-tokens"), buckets, [
+      { name: "Main sessions", color: "var(--s1)", ...tget((r) => noCache(r.tokens.main)) },
+      { name: "Subagents", color: "var(--s2)", ...tget((r) => noCache(r.tokens.sub)) },
+    ], fmtNum, NUM_STEPS);
+    table($("table-tokens"), [group, "Input", "Output", "Thinking", "Cache write", "Cache read"],
+          rows.map((r) => { const m = r.tokens.main, s = r.tokens.sub; return [r.bucket, fmtNum(m.input + s.input), fmtNum(m.output + s.output), fmtNum(m.thinking + s.thinking), fmtNum(m.cache_write + s.cache_write), fmtNum(m.cache_read + s.cache_read)]; }));
+
+    $("tools-sub").textContent = `${fmtNum(t.tool_calls)} calls, ${fmtNum(t.tool_calls_sub)} from subagents`;
+    hbars($("tools"), tools.by_name, "name", "calls", (it) => [["Errors", String(it.errors), null], ["Background", String(it.background), null], ["In subagents", String(it.in_subagents), null]]);
+    hbars($("bash"), tools.bash, "exe", "calls", (it) => [["Errors", String(it.errors), null], ["Background", String(it.background), null]]);
+
+    table($("hosts"), ["Host", "Sessions", "Prompts", "Subagents", "Claude time", "Agent time", "Output", "Tool calls"],
+          byHost.rows.map((r) => [r.host || "-", r.sessions, r.prompts, r.subagents, fmtDur(r.claude_s), fmtDur(r.agent_s),
+                                  fmtNum(r.tokens.main.output + r.tokens.sub.output), fmtNum(r.tool_calls)]));
+    table($("sessions"), ["Last active", "Where", "Project", "Title", "Prompts", "Subagents", "Claude time", "Output"],
+          sessions.map((s) => [new Date(s.last_ts * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }),
+                               `${s.host}/${s.profile}`, s.project, (s.title || "").slice(0, 40), s.prompts, s.subagents,
+                               fmtDur(s.claude_s), fmtNum(s.tokens.output)]), 4);
+    const at = health.computed_at ? new Date(health.computed_at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "never";
+    $("status").textContent = `updated ${at} · times in ${health.timezone} · v${health.version}`;
+  } catch (e) {
+    $("status").replaceChildren(el("span", { class: "err" }, "Error: " + e.message));
+  } finally {
+    document.querySelector("main").classList.remove("loading");
+  }
+}
+
+for (const id of ["days", "group", "host", "profile", "project"]) $(id).addEventListener("change", render);
+$("refresh").addEventListener("click", async () => {
+  await fetch("/api/refresh", { method: "POST" });
+  setTimeout(async () => { await loadDims(); render(); }, 2500);
+});
+let resizeTimer;
+window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(render, 200); });
+loadDims().then(render, (e) => { $("status").textContent = "Error: " + e.message; });
+setInterval(render, 5 * 60 * 1000);
+</script>
+</body>
+</html>

@@ -1,5 +1,7 @@
 # Index
 
+Console: https://claude.ai/artifact/SfziVxpWd83cbuxQEFcy1c
+
 ## Decisions
 
 - [2026-11-07-0159-archive-raw-then-compute](adr/2026-11-07-0159-archive-raw-then-compute.md) — append-only archive; stats recomputed from it

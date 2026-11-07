@@ -1,0 +1,4 @@
+# The project console. Live state lives there, not here.
+console = https://claude.ai/artifact/SfziVxpWd83cbuxQEFcy1c
+project = ccstats
+schema = 4

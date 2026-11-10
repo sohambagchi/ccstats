@@ -2,7 +2,7 @@
 
 ## Next
 - [ ] 1 Feature: register the remaining push hosts that run Claude Code (buckwheat, starling1–3?) #deploy — stages: install, verify
-- [ ] 2 Feature: CloudLab pull source in config.toml and `cloudlab-setup.sh` in the experiment profile #deploy — blocked: CloudLab project name
+- [ ] 2 Feature: run `cloudlab-setup.sh` from the CloudLab experiment profile's startup script #deploy
 - [ ] 3 Evaluate: Claude time against a stopwatch, incl. a 2-min AskUserQuestion wait #metrics — stages: measure
 
 ## Backlog

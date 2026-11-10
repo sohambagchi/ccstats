@@ -1,7 +1,8 @@
 #!/bin/sh
 # Keep this CloudLab node's Claude Code transcripts on /proj so they outlive the node.
 #
-#   curl -fsS @HUB_URL@/cloudlab-setup.sh | sh -s -- [PROJECT]
+#   ccstats script cloudlab-setup | ssh <node> sh -s -- [PROJECT]   (from the hub)
+#   curl -fsS @HUB_URL@/cloudlab-setup.sh | sh -s -- [PROJECT]       (on a node that reaches it)
 #
 # Moves ~/.claude/projects (and ~/.claudia/projects if that profile exists) to
 # /proj/<PROJECT>/ccstats/<node fqdn>/<profile>/projects and symlinks it back.

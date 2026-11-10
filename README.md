@@ -36,11 +36,14 @@ into `archive/<host>/` on the hub. `ccstats-push status`, `ccstats-push uninstal
 
 ## CloudLab
 
-On each node (or in the profile's startup script), before starting Claude Code:
+On each node, before starting Claude Code there. From the hub (nodes may not reach spore):
 
 ```sh
-curl -fsS http://spore:8420/cloudlab-setup.sh | sh -s -- <project>
+ccstats script cloudlab-setup | ssh <you>@<node> sh -s -- <project>
 ```
+
+or, in the profile's startup script on a node that can reach the hub,
+`curl -fsS http://spore:8420/cloudlab-setup.sh | sh -s -- <project>`.
 
 and on the hub, in `~/.config/ccstats/config.toml`:
 

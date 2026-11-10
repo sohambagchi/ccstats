@@ -15,6 +15,7 @@ Console: https://claude.ai/artifact/SfziVxpWd83cbuxQEFcy1c
 
 ## Changes
 
+- [2026-11-09-2043-readme-stats-hook](changelog/2026-11-09-2043-readme-stats-hook.md) — README stats table refreshed by a pre-commit hook
 - [2026-11-09-2050-subagents-in-session-project](changelog/2026-11-09-2050-subagents-in-session-project.md) — worktree agents folded into their session's project
 - [2026-11-09-2035-dashboard-tabs](changelog/2026-11-09-2035-dashboard-tabs.md) — tabbed dashboard, filters in the URL, hosts and collection status
 - [2026-11-09-2016-estimated-cost](changelog/2026-11-09-2016-estimated-cost.md) — dollar estimates in API, dashboard and CLI

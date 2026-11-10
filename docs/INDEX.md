@@ -11,9 +11,11 @@ Console: https://claude.ai/artifact/SfziVxpWd83cbuxQEFcy1c
 - [2026-11-07-0159-claude-time-definition](adr/2026-11-07-0159-claude-time-definition.md) — what Claude time measures
 - [2026-11-09-1945-precomputed-session-rollups](adr/2026-11-09-1945-precomputed-session-rollups.md) — per-session numbers computed once per transcript change; API answers cached by data version
 - [2026-11-09-2016-estimated-cost-at-list-prices](adr/2026-11-09-2016-estimated-cost-at-list-prices.md) — dollar estimate per response from a local price table
+- [2026-11-09-2050-subagents-in-session-project](adr/2026-11-09-2050-subagents-in-session-project.md) — a subagent's project is its session's
 
 ## Changes
 
+- [2026-11-09-2050-subagents-in-session-project](changelog/2026-11-09-2050-subagents-in-session-project.md) — worktree agents folded into their session's project
 - [2026-11-09-2035-dashboard-tabs](changelog/2026-11-09-2035-dashboard-tabs.md) — tabbed dashboard, filters in the URL, hosts and collection status
 - [2026-11-09-2016-estimated-cost](changelog/2026-11-09-2016-estimated-cost.md) — dollar estimates in API, dashboard and CLI
 - [2026-11-09-1945-session-rollups-agent-tree-timeline](changelog/2026-11-09-1945-session-rollups-agent-tree-timeline.md) — cached rollups, subagent hierarchy, session timeline

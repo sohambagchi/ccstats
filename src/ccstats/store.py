@@ -13,6 +13,9 @@ from . import pricing
 from .parse import ParseSettings, Parsed, iso_week, local_day, parse_file, thread_identity
 
 SCHEMA_VERSION = 3
+# Bump when rollup_session derives something new from rows already stored: the next
+# refresh rolls up every session again instead of rebuilding the database.
+ROLLUP_VERSION = "2"
 
 # Row tables and the key that identifies one record across files. A forked or copied
 # session repeats earlier records, so each record counts once: the copy in the
@@ -187,7 +190,7 @@ def _session_of(rel: str) -> tuple[str, str, str]:
 
 
 def rollup_session(conn: sqlite3.Connection, host: str, profile: str, session_id: str, tz: ZoneInfo):
-    """Rebuild one session's thread_stats, subagent parents and sessions row from the stored rows."""
+    """Rebuild one session's thread_stats, subagent parents and projects, and sessions row from the stored rows."""
     threads = conn.execute("SELECT * FROM threads WHERE host = ? AND profile = ? AND session_id = ?",
                            (host, profile, session_id)).fetchall()
     conn.execute("DELETE FROM sessions WHERE host = ? AND profile = ? AND session_id = ?", (host, profile, session_id))
@@ -222,7 +225,11 @@ def rollup_session(conn: sqlite3.Connection, host: str, profile: str, session_id
 
     main = next((t for t in threads if not t["is_subagent"]), None)
     if main is None:
-        return  # subagent files whose main transcript never arrived
+        return  # subagent files whose main transcript never arrived; they keep their own project until it does
+    # Subagents count toward the session's project, wherever they ran (a worktree, another repo);
+    # threads.cwd keeps the directory they actually ran in.
+    conn.execute("UPDATE threads SET project = ? WHERE host = ? AND profile = ? AND session_id = ? AND is_subagent = 1",
+                 (main["project"], host, profile, session_id))
     from .metrics import peak_concurrency
     total = {k: sum(stats[p][k] for p in paths) for k in ("api_calls", "input", "output", "thinking", "cache_read",
                                                            "cache_write", "tool_calls", "tool_errors", "usd")}
@@ -290,13 +297,18 @@ def refresh(conn: sqlite3.Connection, archive: str, settings: ParseSettings, ful
             _write(conn, rel, None)
             stats["removed"] += 1
         sessions = {_session_of(p) for p in _rematerialize(conn)}
+        row = conn.execute("SELECT v FROM meta WHERE k='rollup'").fetchone()
+        rerolled = row is None or row[0] != ROLLUP_VERSION
+        if rerolled:
+            sessions |= {tuple(r) for r in conn.execute("SELECT DISTINCT host, profile, session_id FROM threads")}
+            conn.execute("INSERT OR REPLACE INTO meta VALUES('rollup', ?)", (ROLLUP_VERSION,))
         for s in sorted(sessions):
             rollup_session(conn, *s, tz)
         stats["sessions"] = len(sessions)
         now = str(time.time())
         conn.execute("INSERT OR REPLACE INTO meta VALUES('computed_at', ?)", (now,))
         conn.execute("INSERT OR REPLACE INTO meta VALUES('timezone', ?)", (settings.tz,))
-        if stats["parsed"] or stats["removed"] or repriced:
+        if stats["parsed"] or stats["removed"] or repriced or rerolled:
             conn.execute("INSERT OR REPLACE INTO meta VALUES('data_version', ?)", (now,))
     stats["seconds"] = round(time.time() - t0, 2)
     return stats

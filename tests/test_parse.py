@@ -296,3 +296,38 @@ def test_costs_roll_up_and_reprice(tmp_path, settings, monkeypatch):
     assert st["parsed"] == 0 and st["repriced_sessions"] >= 1
     s1b = next(s for s in metrics.sessions(conn, metrics.Filter()) if s["session_id"] == "s1")
     assert s1b["usd"] == pytest.approx(2 * s1["usd"])
+
+
+def test_subagents_count_toward_their_sessions_project(tmp_path, settings):
+    archive = tmp_path / "archive"
+    # A subagent that ran in a worktree, arriving before its main transcript.
+    rel, recs, meta = _subagent("10:00:00", "10:05:00", "w1", "general-purpose", 1)
+    for r in recs:
+        r["cwd"] = "/home/u/dev/proj/.claude/worktrees/agent-w1"
+    write(archive, rel, recs, meta=meta)
+    conn = store.connect(str(tmp_path / "db.sqlite"))
+    store.refresh(conn, str(archive), settings)
+    assert metrics.dimensions(conn)["project"] == ["agent-w1"]  # no main thread yet: its own directory
+
+    build_archive(archive)
+    store.refresh(conn, str(archive), settings)
+    assert metrics.dimensions(conn)["project"] == ["proj"]
+    cwd = conn.execute("SELECT cwd FROM threads WHERE agent_id = 'w1'").fetchone()[0]
+    assert cwd.endswith("/.claude/worktrees/agent-w1")  # where it really ran is kept
+    # Filtering by the project now counts the same work the sessions list shows.
+    [whole] = metrics.summary(conn, metrics.Filter(), "total")
+    [proj] = metrics.summary(conn, metrics.Filter(project="proj"), "total")
+    assert proj["subagents"] == whole["subagents"] == 3
+    assert proj["cost"]["total"] == pytest.approx(whole["cost"]["total"])
+    [s1] = metrics.sessions(conn, metrics.Filter(project="proj"))
+    assert s1["usd"] == pytest.approx(proj["cost"]["total"])
+
+    # A database rolled up by an older version is fixed on the next refresh, without re-parsing.
+    conn.execute("UPDATE threads SET project = 'stale' WHERE is_subagent = 1")
+    conn.execute("UPDATE meta SET v = '1' WHERE k = 'rollup'")
+    conn.commit()
+    before = store.data_version(conn)
+    st = store.refresh(conn, str(archive), settings)
+    assert st["parsed"] == 0 and st["sessions"] == 1
+    assert metrics.dimensions(conn)["project"] == ["proj"]
+    assert store.data_version(conn) != before

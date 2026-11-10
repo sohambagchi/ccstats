@@ -2,7 +2,7 @@
 # ccstats push: send this machine's Claude Code transcripts to the ccstats hub.
 #
 #   curl -fsS @HUB_URL@/push.sh | sh -s -- install [NAME]
-#   ccstats-push run [-q]    push now (what the timer runs every 15 minutes)
+#   ccstats-push run [-q]    push now (what the timer runs hourly)
 #   ccstats-push status      show settings and the timer
 #   ccstats-push uninstall   remove the timer and script; key and settings stay
 #
@@ -112,14 +112,14 @@ install_timer() {
 <plist version="1.0"><dict>
   <key>Label</key><string>com.ccstats.push</string>
   <key>ProgramArguments</key><array><string>$bin</string><string>run</string></array>
-  <key>StartInterval</key><integer>900</integer>
+  <key>StartInterval</key><integer>3600</integer>
   <key>RunAtLoad</key><true/>
   <key>StandardErrorPath</key><string>$HOME/Library/Logs/ccstats-push.log</string>
 </dict></plist>
 EOF
     launchctl unload "$plist" 2>/dev/null || true
     launchctl load "$plist"
-    say "launchd agent com.ccstats.push runs every 15 minutes"
+    say "launchd agent com.ccstats.push runs hourly"
   elif systemctl --user show-environment >/dev/null 2>&1; then
     unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
     mkdir -p "$unit_dir"
@@ -134,10 +134,10 @@ ExecStart=$bin run
 EOF
     cat >"$unit_dir/ccstats-push.timer" <<EOF
 [Unit]
-Description=Push Claude Code transcripts to the ccstats hub every 15 minutes
+Description=Push Claude Code transcripts to the ccstats hub hourly
 
 [Timer]
-OnCalendar=*:0/15
+OnCalendar=hourly
 RandomizedDelaySec=60
 Persistent=true
 
@@ -146,7 +146,7 @@ WantedBy=timers.target
 EOF
     systemctl --user daemon-reload
     if systemctl --user enable --now ccstats-push.timer >/dev/null; then
-      say "systemd user timer ccstats-push.timer runs every 15 minutes"
+      say "systemd user timer ccstats-push.timer runs hourly"
     else
       say "could not enable ccstats-push.timer; run '$bin run' periodically yourself"
     fi
@@ -154,8 +154,8 @@ EOF
       say "lingering is off, so the timer only runs while you are logged in (enable: loginctl enable-linger $(id -un))"
     fi
   elif command -v crontab >/dev/null 2>&1; then
-    { crontab -l 2>/dev/null | grep -v '# ccstats-push$' || true; echo "*/15 * * * * $bin run >/dev/null 2>&1 # ccstats-push"; } | crontab -
-    say "cron entry runs every 15 minutes"
+    { crontab -l 2>/dev/null | grep -v '# ccstats-push$' || true; echo "0 * * * * $bin run >/dev/null 2>&1 # ccstats-push"; } | crontab -
+    say "cron entry runs hourly"
   else
     say "no systemd, launchd or cron: run '$bin run' periodically yourself"
   fi

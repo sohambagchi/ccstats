@@ -5,7 +5,7 @@ Last 30 days, as of 2026-11-09:
 
 | Claude time | Est. cost | Sessions | Subagents | Tool calls | Output tokens |
 |---|---|---|---|---|---|
-| 389h41m | $5,774 | 106 | 600 | 62,178 | 38.9M |
+| 389h42m | $5,774 | 106 | 600 | 62,190 | 38.9M |
 <!-- stats:end -->
 
 Claude Code usage across machines: sessions, subagents, tokens, tool calls and Claude time,
@@ -18,7 +18,7 @@ per day and week, served as a dashboard and JSON API on the tailnet. Design and 
 |---|---|---|
 | hub (spore) | `ccstats-serve.service`: API + dashboard on `:8420`; re-parses changed files hourly and on push | always on |
 | hub | `ccstats-collect.timer`: archive spore's own transcripts, rsync CloudLab `/proj` trees, compute | hourly |
-| push host (laptop, desktop) | `ccstats-push.timer` (systemd; launchd/cron fallback): rsync transcripts to the hub, POST `/api/refresh` | every 15 min |
+| push host (laptop, desktop) | `ccstats-push.timer` (systemd; launchd/cron fallback): rsync transcripts to the hub, POST `/api/refresh` | hourly |
 | CloudLab node | nothing; `cloudlab-setup.sh` once puts transcripts on `/proj` | — |
 
 ## Hub

@@ -25,7 +25,8 @@ def _rsync(src: str, dst: str, ssh: bool) -> tuple[bool, str]:
     os.makedirs(dst, exist_ok=True)
     cmd = ["rsync", "-a", "--timeout=120", *RSYNC_FILTERS]
     if ssh:
-        cmd += ["-e", SSH_OPTS]
+        # Transcripts are JSON text and compress about 5x.
+        cmd += ["-z", "-e", SSH_OPTS]
     cmd += [src.rstrip("/") + "/", dst.rstrip("/") + "/"]
     p = subprocess.run(cmd, capture_output=True, text=True)
     # 23/24 = some files vanished or were unreadable mid-copy; the rest arrived.

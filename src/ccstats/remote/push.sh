@@ -59,11 +59,12 @@ do_run() {
     profile=${spec%%=*}
     dir=${spec#*=}
     [ -d "$dir/projects" ] || continue
-    # -R with /./ recreates projects/ under <profile>/ on the hub.
-    rsync -aR --timeout=120 --prune-empty-dirs \
+    # -R with /./ recreates projects/ under <profile>/ on the hub; -z because
+    # transcripts are JSON text and compress about 5x.
+    rsync -aRz --timeout=120 --prune-empty-dirs \
       --exclude=tool-results/ --exclude=memory/ --exclude=file-history/ \
       --include='*/' --include='*.jsonl' --include='*.json' --exclude='*' \
-      -e "ssh -i $key -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new" \
+      -e "ssh -i $key -o IdentitiesOnly=yes -o ControlPath=none -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o StrictHostKeyChecking=accept-new" \
       "$dir/./projects/" "$HUB_SSH:$profile/"
     sent=$((sent + 1))
   done
@@ -119,8 +120,11 @@ Persistent=true
 WantedBy=timers.target
 EOF
     systemctl --user daemon-reload
-    systemctl --user enable --now ccstats-push.timer >/dev/null
-    say "systemd user timer ccstats-push.timer runs every 15 minutes"
+    if systemctl --user enable --now ccstats-push.timer >/dev/null; then
+      say "systemd user timer ccstats-push.timer runs every 15 minutes"
+    else
+      say "could not enable ccstats-push.timer; run '$bin run' periodically yourself"
+    fi
     if [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)" != yes ]; then
       say "lingering is off, so the timer only runs while you are logged in (enable: loginctl enable-linger $(id -un))"
     fi

@@ -12,14 +12,16 @@ from . import __version__, collect, config, hosts, metrics, store
 
 
 def _compute(cfg, full=False, quiet=False):
+    if not quiet:
+        print(f"compute: {cfg.archive} -> {cfg.db}" + (" (full re-parse)" if full else ""))
     with store.compute_lock(cfg.data_dir):
         conn = store.connect(cfg.db)
         try:
-            stats = store.refresh(conn, cfg.archive, cfg.settings, full=full)
+            stats = store.refresh(conn, cfg.archive, cfg.settings, full=full,
+                                  log=None if quiet else (lambda m: print(f"  {m}")))
         finally:
             conn.close()
-    if not quiet:
-        print(f"compute: {stats['parsed']} parsed, {stats['unchanged']} unchanged, {stats['removed']} removed in {stats['seconds']}s")
+    print(f"compute: {stats['parsed']} parsed, {stats['unchanged']} unchanged, {stats['removed']} removed in {stats['seconds']}s")
     return stats
 
 
@@ -126,6 +128,7 @@ def main(argv=None):
     p = argparse.ArgumentParser(prog="ccstats", description="Cross-machine Claude Code usage stats")
     p.add_argument("--config", help="config file (default ~/.config/ccstats/config.toml)")
     p.add_argument("--version", action="version", version=__version__)
+    p.add_argument("-q", "--quiet", action="store_true", help="only summary lines and errors")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     c = sub.add_parser("collect", help="snapshot local profiles and run ssh pulls, then compute")
@@ -170,22 +173,26 @@ def main(argv=None):
     sc.add_argument("which", choices=["push", "cloudlab-setup"])
 
     args = p.parse_args(argv)
+    # Under systemd stdout is a pipe; flush per line so the journal shows progress as it happens.
+    sys.stdout.reconfigure(line_buffering=True)
     cfg = config.load(args.config)
 
     if args.cmd == "collect":
-        collect.run(cfg)
+        collect.run(cfg, verbose=not args.quiet)
         if args.refresh_url:
             import urllib.request
-            urllib.request.urlopen(urllib.request.Request(args.refresh_url.rstrip("/") + "/api/refresh", method="POST"), timeout=10)
+            url = args.refresh_url.rstrip("/") + "/api/refresh"
+            with urllib.request.urlopen(urllib.request.Request(url, method="POST"), timeout=10) as r:
+                print(f"refresh: POST {url} -> {r.status}")
         elif not args.no_compute:
-            _compute(cfg)
+            _compute(cfg, quiet=args.quiet)
     elif args.cmd == "pull":
-        res = collect.run(cfg, only=args.name, via=args.via)
+        res = collect.run(cfg, only=args.name, via=args.via, verbose=not args.quiet)
         if not res:
             raise SystemExit(f"unknown source {args.name}; configured: {cfg.host}, " + ", ".join(p.name for p in cfg.pulls))
-        _compute(cfg)
+        _compute(cfg, quiet=args.quiet)
     elif args.cmd == "compute":
-        _compute(cfg, full=args.full)
+        _compute(cfg, full=args.full, quiet=args.quiet)
     elif args.cmd == "report":
         cmd_report(args, cfg)
     elif args.cmd == "sessions":

@@ -2,13 +2,14 @@
 # ccstats push: send this machine's Claude Code transcripts to the ccstats hub.
 #
 #   curl -fsS @HUB_URL@/push.sh | sh -s -- install [NAME]
-#   ccstats-push run         push now (what the timer runs every 15 minutes)
+#   ccstats-push run [-q]    push now (what the timer runs every 15 minutes)
 #   ccstats-push status      show settings and the timer
 #   ccstats-push uninstall   remove the timer and script; key and settings stay
 #
 # Transport is rsync over ssh with a dedicated key that the hub restricts to
 # writing into its archive/<NAME>/ directory. Only *.jsonl transcripts and
 # their small *.json sidecars are sent; nothing on this machine is deleted.
+# Every command reports what it does; `run -q` prints only errors and a summary.
 set -eu
 
 conf_dir="${XDG_CONFIG_HOME:-$HOME/.config}/ccstats"
@@ -27,7 +28,9 @@ HUB_URL=${CCSTATS_HUB_URL:-$HUB_URL}
 NAME=${CCSTATS_NAME:-$NAME}
 PROFILES=${CCSTATS_PROFILES:-$PROFILES}
 
+quiet=
 say() { printf 'ccstats-push: %s\n' "$*"; }
+info() { [ -n "$quiet" ] || say "$@"; }
 
 # Keep transcripts for ~10 years instead of Claude Code's default 30 days.
 set_retention() {
@@ -40,12 +43,15 @@ s = {}
 if os.path.exists(p):
     with open(p) as f:
         s = json.load(f)
-if s.get("cleanupPeriodDays", 0) < 3650:
+old = s.get("cleanupPeriodDays")
+if (old or 0) < 3650:
     s["cleanupPeriodDays"] = 3650
     with open(p, "w") as f:
         json.dump(s, f, indent=2)
         f.write("\n")
-    print(f"ccstats-push: {p}: cleanupPeriodDays = 3650")
+    print(f"ccstats-push:   cleanupPeriodDays {'unset (30-day default)' if old is None else old} -> 3650 in {p}")
+else:
+    print(f"ccstats-push:   cleanupPeriodDays already {old} in {p}")
 EOF
 }
 
@@ -54,14 +60,25 @@ do_run() {
     exec 9>"${TMPDIR:-/tmp}/ccstats-push.$(id -u).lock"
     flock -n 9 || { say "another push is running"; exit 0; }
   fi
+  start=$(date +%s)
+  info "pushing as $NAME to $HUB_SSH (key $key)"
+  # -v lists each file sent and ends with a bytes summary; --progress only on a terminal.
+  verbose="-v"
+  [ -t 1 ] && verbose="-v --progress"
+  [ -n "$quiet" ] && verbose=""
   sent=0
   for spec in $PROFILES; do
     profile=${spec%%=*}
     dir=${spec#*=}
-    [ -d "$dir/projects" ] || continue
+    if [ ! -d "$dir/projects" ]; then
+      info "$profile: skipped, no $dir/projects"
+      continue
+    fi
+    info "$profile: $dir/projects ($(find "$dir/projects" -name '*.jsonl' | wc -l | tr -d ' ') transcripts) -> $HUB_SSH:$profile/projects/"
     # -R with /./ recreates projects/ under <profile>/ on the hub; -z because
     # transcripts are JSON text and compress about 5x.
-    rsync -aRz --timeout=120 --prune-empty-dirs \
+    # shellcheck disable=SC2086
+    rsync -aRz $verbose --timeout=120 --prune-empty-dirs \
       --exclude=tool-results/ --exclude=memory/ --exclude=file-history/ \
       --include='*/' --include='*.jsonl' --include='*.json' --exclude='*' \
       -e "ssh -i $key -o IdentitiesOnly=yes -o ControlPath=none -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o StrictHostKeyChecking=accept-new" \
@@ -71,10 +88,18 @@ do_run() {
   [ "$sent" -gt 0 ] || { say "no profiles with a projects/ directory in: $PROFILES"; exit 0; }
   # Ask the hub to fold the new data in now rather than at its next periodic refresh.
   if command -v curl >/dev/null 2>&1; then
-    curl -fsS -m 10 -X POST "$HUB_URL/api/refresh" >/dev/null 2>&1 || true
+    code=$(curl -sS -m 10 -o /dev/null -w '%{http_code}' -X POST "$HUB_URL/api/refresh" 2>&1 | tr '\n' ' ' | sed 's/ *$//') || true
   elif command -v wget >/dev/null 2>&1; then
-    wget -q -T 10 -O /dev/null --post-data= "$HUB_URL/api/refresh" 2>/dev/null || true
+    code=$(wget -q -T 10 -O /dev/null --post-data= "$HUB_URL/api/refresh" 2>&1 && echo 202) || code=failed
+  else
+    code="skipped (no curl or wget)"
   fi
+  if [ "$code" = 202 ]; then
+    info "asked $HUB_URL to refresh: queued"
+  else
+    say "asking $HUB_URL to refresh: $code (the hub still picks the files up within 5 minutes)"
+  fi
+  say "pushed $sent profile(s) in $(( $(date +%s) - start ))s"
 }
 
 install_timer() {
@@ -148,6 +173,7 @@ HUB_URL='$HUB_URL'
 NAME='$NAME'
 PROFILES='$PROFILES'
 EOF
+  say "settings: $conf (name $NAME, hub $HUB_SSH, $HUB_URL)"
   # Piped through sh there is no file to copy, so fetch a fresh copy from the hub.
   if [ -f "$0" ] && grep -q 'ccstats push' "$0" 2>/dev/null; then
     cp "$0" "$bin.tmp"
@@ -155,10 +181,22 @@ EOF
     curl -fsS "$HUB_URL/push.sh" -o "$bin.tmp" 2>/dev/null || wget -q -O "$bin.tmp" "$HUB_URL/push.sh"
   fi
   chmod +x "$bin.tmp" && mv "$bin.tmp" "$bin"
-  [ -f "$key" ] || ssh-keygen -q -t ed25519 -N '' -C "ccstats-push@$NAME" -f "$key"
+  say "script: $bin"
+  if [ -f "$key" ]; then
+    say "key: $key (existing)"
+  else
+    ssh-keygen -q -t ed25519 -N '' -C "ccstats-push@$NAME" -f "$key"
+    say "key: $key (new ed25519)"
+  fi
   for spec in $PROFILES; do
+    profile=${spec%%=*}
     dir=${spec#*=}
-    [ -d "$dir" ] && set_retention "$dir"
+    if [ -d "$dir" ]; then
+      say "profile $profile: $dir"
+      set_retention "$dir"
+    else
+      say "profile $profile: not present ($dir), skipped"
+    fi
   done
   install_timer
   echo
@@ -174,14 +212,17 @@ do_uninstall() {
   if [ "$(uname -s)" = Darwin ]; then
     launchctl unload "$HOME/Library/LaunchAgents/com.ccstats.push.plist" 2>/dev/null || true
     rm -f "$HOME/Library/LaunchAgents/com.ccstats.push.plist"
+    say "removed launchd agent com.ccstats.push"
   fi
   if systemctl --user show-environment >/dev/null 2>&1; then
     systemctl --user disable --now ccstats-push.timer 2>/dev/null || true
     rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/ccstats-push.service" "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/ccstats-push.timer"
     systemctl --user daemon-reload 2>/dev/null || true
+    say "removed systemd units ccstats-push.service and ccstats-push.timer"
   fi
   if command -v crontab >/dev/null 2>&1 && crontab -l 2>/dev/null | grep -q '# ccstats-push$'; then
     crontab -l | grep -v '# ccstats-push$' | crontab -
+    say "removed cron entry"
   fi
   rm -f "$bin"
   say "removed; kept $key and $conf (on the hub: ccstats host rm $NAME)"
@@ -196,9 +237,9 @@ do_status() {
 }
 
 case "${1:-}" in
-  run) do_run ;;
+  run) [ "${2:-}" = -q ] && quiet=1; do_run ;;
   install) do_install "${2:-}" ;;
   uninstall) do_uninstall ;;
   status) do_status ;;
-  *) echo "usage: ccstats-push install [NAME] | run | status | uninstall" >&2; exit 2 ;;
+  *) echo "usage: ccstats-push install [NAME] | run [-q] | status | uninstall" >&2; exit 2 ;;
 esac

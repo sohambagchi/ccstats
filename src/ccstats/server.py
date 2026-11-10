@@ -70,21 +70,28 @@ class Refresher:
         self.cfg = cfg
         self.wanted = threading.Event()
         self.last: dict = {}
+        self.reason = "startup"
 
-    def request(self):
+    def request(self, reason: str = "request"):
+        self.reason = reason
         self.wanted.set()
 
     def loop(self):
         while True:
-            self.wanted.wait(REFRESH_EVERY_S)
+            asked = self.wanted.wait(REFRESH_EVERY_S)
             self.wanted.clear()
+            reason, self.reason = (self.reason if asked else "timer"), "request"
             try:
                 with store.compute_lock(self.cfg.data_dir):
                     conn = store.connect(self.cfg.db)
                     try:
-                        self.last = {**store.refresh(conn, self.cfg.archive, self.cfg.settings), "at": time.time()}
+                        st = store.refresh(conn, self.cfg.archive, self.cfg.settings,
+                                           log=lambda m: print(f"refresh:   {m}", flush=True))
+                        self.last = {**st, "at": time.time()}
                     finally:
                         conn.close()
+                print(f"refresh ({reason}): {st['parsed']} parsed, {st['unchanged']} unchanged, "
+                      f"{st['removed']} removed in {st['seconds']}s", flush=True)
             except Exception:  # keep serving; the next round retries
                 traceback.print_exc()
             time.sleep(2)  # coalesce bursts of pushes
@@ -109,7 +116,10 @@ class Server(ThreadingHTTPServer):
         super().server_bind()
 
     def verify_request(self, request, client_address):
-        return self.acl.allows(client_address[0]) or _deny(request)
+        if self.acl.allows(client_address[0]):
+            return True
+        print(f"{client_address[0]} denied: not loopback, tailnet, private or an attached subnet", flush=True)
+        return _deny(request)
 
 
 def _deny(sock) -> bool:
@@ -152,7 +162,8 @@ class Handler(BaseHTTPRequestHandler):
     timeout = 30
 
     def log_message(self, fmt, *args):
-        pass
+        # One line per request: client, request line, status (the journal adds the time).
+        print(f"{self.client_address[0]} {fmt % args}", flush=True)
 
     def _send(self, status: int, body: bytes, ctype: str):
         self.send_response(status)
@@ -185,7 +196,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if urlparse(self.path).path == "/api/refresh":
-            self.server.refresher.request()
+            self.server.refresher.request(f"POST from {self.client_address[0]}")
             return self._json({"queued": True}, HTTPStatus.ACCEPTED)
         self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
@@ -271,7 +282,7 @@ def serve(cfg: Config, listen: str | None = None):
     refresher = Refresher(cfg)
     srv = Server(cfg, (host, int(port)), refresher)
     threading.Thread(target=refresher.loop, daemon=True).start()
-    refresher.request()
+    refresher.request("startup")
     print(f"ccstats {__version__} serving http://{listen} (data {cfg.data_dir})", flush=True)
     try:
         srv.serve_forever()

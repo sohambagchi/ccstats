@@ -21,61 +21,126 @@ RSYNC_FILTERS = [
 SSH_OPTS = "ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15"
 
 
-def _rsync(src: str, dst: str, ssh: bool) -> tuple[bool, str]:
+def _human(n: float) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} GB"
+
+
+def _stat(out: str, label: str) -> int:
+    for line in out.splitlines():
+        if line.startswith(label + ":"):
+            digits = "".join(ch for ch in line.split(":", 1)[1].split("(")[0] if ch.isdigit())
+            return int(digits or 0)
+    return 0
+
+
+def _rsync(src: str, dst: str, ssh: bool) -> dict:
+    """Copy src into dst; report what moved: files, their size, bytes on the wire, seconds."""
     os.makedirs(dst, exist_ok=True)
-    cmd = ["rsync", "-a", "--timeout=120", *RSYNC_FILTERS]
+    cmd = ["rsync", "-a", "--timeout=120", "--stats", "--out-format=%n", *RSYNC_FILTERS]
     if ssh:
         # Transcripts are JSON text and compress about 5x.
         cmd += ["-z", "-e", SSH_OPTS]
     cmd += [src.rstrip("/") + "/", dst.rstrip("/") + "/"]
+    t0 = time.time()
     p = subprocess.run(cmd, capture_output=True, text=True)
+    out = p.stdout
+    # --out-format lines come before the --stats block, which opens with "Number of files:".
+    names = []
+    for ln in out.splitlines():
+        if ln.startswith("Number of files:"):
+            break
+        if ln and not ln.endswith("/"):
+            names.append(ln)
     # 23/24 = some files vanished or were unreadable mid-copy; the rest arrived.
     ok = p.returncode in (0, 23, 24)
-    return ok, (p.stderr.strip().splitlines() or [""])[-1] if not ok else ""
+    return {
+        "ok": ok,
+        "error": "" if ok else _error(p.stderr, p.returncode),
+        "warning": "some files vanished or were unreadable mid-copy" if p.returncode in (23, 24) else "",
+        "files": names,
+        "size": _stat(out, "Total transferred file size"),
+        "wire": _stat(out, "Total bytes received") if src.count(":") else _stat(out, "Total bytes sent"),
+        "seconds": round(time.time() - t0, 1),
+    }
 
 
-def collect_local(cfg: Config) -> dict:
+def _error(stderr: str, code: int) -> str:
+    """The useful part of a failed rsync's stderr: ssh's own complaint comes before rsync's summary."""
+    lines = [ln.strip() for ln in stderr.splitlines() if ln.strip()]
+    cause = [ln for ln in lines if not ln.startswith("rsync")]
+    return "; ".join(cause[-2:] or lines[-1:]) or f"rsync exit {code}"
+
+
+def _merge(results: list[dict]) -> dict:
+    return {
+        "ok": all(r["ok"] for r in results),
+        "error": "; ".join(r["error"] for r in results if r["error"]),
+        "warning": "; ".join(r["warning"] for r in results if r["warning"]),
+        "files": [f for r in results for f in r["files"]],
+        "size": sum(r["size"] for r in results),
+        "wire": sum(r["wire"] for r in results),
+        "seconds": round(sum(r["seconds"] for r in results), 1),
+    }
+
+
+def collect_local(cfg: Config, log=print) -> dict:
     """Snapshot this machine's profiles into archive/<host>/<profile>/projects."""
     out = {}
     for profile, cfg_dir in cfg.profiles.items():
         src = os.path.join(os.path.expanduser(cfg_dir), "projects")
         if not os.path.isdir(src):
+            log(f"{cfg.host}/{profile}: skipped, no {src}")
             continue
-        ok, err = _rsync(src, os.path.join(cfg.archive, cfg.host, profile, "projects"), ssh=False)
-        out[f"{cfg.host}/{profile}"] = {"ok": ok, "error": err}
+        dst = os.path.join(cfg.archive, cfg.host, profile, "projects")
+        log(f"{cfg.host}/{profile}: copying {src}/ -> {dst}/")
+        out[f"{cfg.host}/{profile}"] = _rsync(src, dst, ssh=False)
     return out
 
 
-def pull(cfg: Config, src: Pull, via: str | None = None) -> dict:
+def pull(cfg: Config, src: Pull, via: str | None = None, log=print) -> dict:
     """Fetch one pull source, trying its ssh targets in order until one answers."""
     targets = [via] if via else src.ssh
     last_err = "no ssh targets"
     for target in targets:
         if src.kind == "cloudlab":
-            ok, err = _rsync(f"{target}:{src.path}", cfg.archive, ssh=True)
+            log(f"pull:{src.name}: rsync {target}:{src.path} -> {cfg.archive}/")
+            res = _rsync(f"{target}:{src.path}", cfg.archive, ssh=True)
         else:
-            ok, err = True, ""
+            parts = []
             for profile, cfg_dir in src.profiles.items():
                 remote = cfg_dir.replace("~/", "", 1) if cfg_dir.startswith("~/") else cfg_dir
-                p_ok, p_err = _rsync(f"{target}:{remote}/projects", os.path.join(cfg.archive, src.name, profile, "projects"), ssh=True)
+                dst = os.path.join(cfg.archive, src.name, profile, "projects")
+                log(f"pull:{src.name}: rsync {target}:{remote}/projects -> {dst}/")
+                r = _rsync(f"{target}:{remote}/projects", dst, ssh=True)
                 # A host may lack a profile; only a failure to reach it counts.
-                if not p_ok and "No such file" not in p_err:
-                    ok, err = False, p_err
-        if ok:
-            return {"ok": True, "via": target, "error": ""}
-        last_err = f"{target}: {err}"
-    return {"ok": False, "via": None, "error": last_err}
+                if not r["ok"] and "No such file" in r["error"]:
+                    log(f"pull:{src.name}: {target} has no {remote}/projects, skipped")
+                    r = {**r, "ok": True, "error": ""}
+                parts.append(r)
+            res = _merge(parts)
+        if res["ok"]:
+            return {**res, "via": target}
+        if len(targets) > 1:
+            log(f"pull:{src.name}: {target} failed, trying the next target: {res['error']}")
+        last_err = f"{target}: {res['error']}"
+    return {"ok": False, "via": None, "error": last_err, "warning": "", "files": [], "size": 0, "wire": 0, "seconds": 0}
 
 
-def run(cfg: Config, only: str | None = None, via: str | None = None, log=print) -> dict:
+def run(cfg: Config, only: str | None = None, via: str | None = None, log=print, verbose: bool = True) -> dict:
+    """Run the local snapshot and the pulls (or just `only`), log each, and record status.json."""
+    quiet = (lambda _msg: None) if not verbose else log
     status = load_status(cfg)
     now = time.time()
     results: dict[str, dict] = {}
     if only is None or only == cfg.host:
-        results.update(collect_local(cfg))
+        results.update(collect_local(cfg, log=quiet))
     for src in cfg.pulls:
         if only is None or only == src.name:
-            results[f"pull:{src.name}"] = pull(cfg, src, via)
+            results[f"pull:{src.name}"] = pull(cfg, src, via, log=quiet)
     for name, res in results.items():
         entry = status.setdefault(name, {})
         entry["last_attempt"] = now
@@ -83,7 +148,17 @@ def run(cfg: Config, only: str | None = None, via: str | None = None, log=print)
         if res.get("ok"):
             entry["last_success"] = now
             entry["via"] = res.get("via")
-        log(f"{name}: {'ok' if res.get('ok') else 'FAILED ' + res.get('error', '')}")
+            n = len(res["files"])
+            via_s = f" via {res['via']}" if res.get("via") else ""
+            line = (f"{name}: ok{via_s}, {n} file{'s' if n != 1 else ''} updated"
+                    + (f" ({_human(res['size'])}, {_human(res['wire'])} transferred)" if n else "")
+                    + f" in {res['seconds']}s")
+            log(line + (f" [warning: {res['warning']}]" if res.get("warning") else ""))
+            if verbose:
+                for f in res["files"]:
+                    log(f"  + {f}")
+        else:
+            log(f"{name}: FAILED {res.get('error', '')}")
     save_status(cfg, status)
     return results
 

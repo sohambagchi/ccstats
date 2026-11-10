@@ -9,9 +9,10 @@ import time
 from contextlib import contextmanager
 from zoneinfo import ZoneInfo
 
+from . import pricing
 from .parse import ParseSettings, Parsed, iso_week, local_day, parse_file, thread_identity
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Row tables and the key that identifies one record across files. A forked or copied
 # session repeats earlier records, so each record counts once: the copy in the
@@ -19,7 +20,7 @@ SCHEMA_VERSION = 2
 # keys a refresh touched.
 _COLUMNS = {
     "messages": ("path TEXT, message_id TEXT, ts REAL, day TEXT, week TEXT, model TEXT, input INT, output INT, "
-                 "thinking INT, cache_read INT, cache_write INT, cache_write_1h INT", ("message_id",)),
+                 "thinking INT, cache_read INT, cache_write INT, cache_write_1h INT, usd REAL", ("message_id",)),
     "tools": ("path TEXT, tool_use_id TEXT, ts REAL, day TEXT, week TEXT, name TEXT, exe TEXT, model TEXT, "
               "is_error INT, is_background INT, is_decision INT, human_approved INT, duration REAL", ("tool_use_id",)),
     "prompts": ("path TEXT, uuid TEXT, ts REAL, day TEXT, week TEXT, claude_s REAL, api_s REAL", ("uuid",)),
@@ -46,7 +47,7 @@ CREATE INDEX IF NOT EXISTS u_{t}_day ON u_{t}(day);
 -- Per-thread totals over its de-duplicated records, rebuilt with its session.
 CREATE TABLE IF NOT EXISTS thread_stats(
   path TEXT PRIMARY KEY, api_calls INT, input INT, output INT, thinking INT, cache_read INT, cache_write INT,
-  tool_calls INT, tool_errors INT, agent_calls INT, claude_s REAL, api_s REAL);
+  tool_calls INT, tool_errors INT, agent_calls INT, claude_s REAL, api_s REAL, usd REAL);
 -- One row per main session with its subagents folded in; rebuilt only when one of its files changes.
 CREATE TABLE IF NOT EXISTS sessions(
   host TEXT, profile TEXT, session_id TEXT, path TEXT, project TEXT, cwd TEXT, title TEXT, model TEXT,
@@ -54,7 +55,7 @@ CREATE TABLE IF NOT EXISTS sessions(
   compactions INT, cost_usd REAL, subagents INT, agent_types TEXT, depth_counts TEXT, forks INT,
   background_agents INT, max_spawn_depth INT, peak_concurrent_subagents INT, api_calls INT, tool_calls INT,
   tool_errors INT, input INT, output INT, thinking INT, cache_read INT, cache_write INT,
-  claude_s REAL, api_s REAL, agent_s REAL, PRIMARY KEY(host, profile, session_id));
+  claude_s REAL, api_s REAL, agent_s REAL, usd REAL, PRIMARY KEY(host, profile, session_id));
 CREATE INDEX IF NOT EXISTS sessions_last ON sessions(last_ts);
 """
 
@@ -118,6 +119,8 @@ def _write(conn: sqlite3.Connection, rel: str, parsed: Parsed | None):
         conn.execute("DELETE FROM files WHERE path = ?", (rel,))
         conn.execute("DELETE FROM thread_stats WHERE path = ?", (rel,))
         return
+    for m in parsed.messages:
+        m["usd"] = _usd(m)
     th = {"path": rel, **parsed.thread}
     conn.execute(f"INSERT INTO threads({','.join(th)}) VALUES({','.join('?' * len(th))})", list(th.values()))
     for table, rows in (("messages", parsed.messages), ("tools", parsed.tools), ("prompts", parsed.prompts), ("busy", parsed.busy)):
@@ -127,6 +130,25 @@ def _write(conn: sqlite3.Connection, rel: str, parsed: Parsed | None):
         sql = f"INSERT OR REPLACE INTO {table}({','.join(cols)}) VALUES({','.join('?' * len(cols))})"
         conn.executemany(sql, [[rel, iso_week(r["day"]), *r.values()] for r in rows])
     _note_dirty(conn, rel)
+
+
+def _usd(m) -> float:
+    return pricing.usd(m["model"], m["input"], m["output"], m["cache_read"], m["cache_write"], m["cache_write_1h"])
+
+
+def _reprice(conn, tz: ZoneInfo) -> int:
+    """Re-price every stored message after a price-table change and rebuild all session rollups."""
+    row = conn.execute("SELECT v FROM meta WHERE k='prices'").fetchone()
+    if row and row[0] == pricing.VERSION:
+        return 0
+    conn.create_function("usd", 6, pricing.usd, deterministic=True)
+    for t in ("messages", "u_messages"):
+        conn.execute(f"UPDATE {t} SET usd = usd(model, input, output, cache_read, cache_write, cache_write_1h)")
+    sessions = conn.execute("SELECT DISTINCT host, profile, session_id FROM threads").fetchall()
+    for s in sessions:
+        rollup_session(conn, *s, tz)
+    conn.execute("INSERT OR REPLACE INTO meta VALUES('prices', ?)", (pricing.VERSION,))
+    return len(sessions)
 
 
 def _note_dirty(conn, rel):
@@ -174,11 +196,12 @@ def rollup_session(conn: sqlite3.Connection, host: str, profile: str, session_id
     paths = [t["path"] for t in threads]
     q = ",".join("?" * len(paths))
     stats = {p: dict(api_calls=0, input=0, output=0, thinking=0, cache_read=0, cache_write=0, tool_calls=0,
-                     tool_errors=0, agent_calls=0, claude_s=0.0, api_s=0.0) for p in paths}
+                     tool_errors=0, agent_calls=0, claude_s=0.0, api_s=0.0, usd=0.0) for p in paths}
     for r in conn.execute(f"""SELECT path, COUNT(*) n, SUM(input) i, SUM(output) o, SUM(thinking) th,
-                              SUM(cache_read) cr, SUM(cache_write) cw FROM u_messages WHERE path IN ({q}) GROUP BY path""", paths):
+                              SUM(cache_read) cr, SUM(cache_write) cw, SUM(usd) usd
+                              FROM u_messages WHERE path IN ({q}) GROUP BY path""", paths):
         stats[r["path"]].update(api_calls=r["n"], input=r["i"] or 0, output=r["o"] or 0, thinking=r["th"] or 0,
-                                cache_read=r["cr"] or 0, cache_write=r["cw"] or 0)
+                                cache_read=r["cr"] or 0, cache_write=r["cw"] or 0, usd=r["usd"] or 0.0)
     for r in conn.execute(f"""SELECT path, COUNT(*) n, SUM(is_error) e, SUM(name IN ('Agent', 'Task')) a
                               FROM u_tools WHERE path IN ({q}) GROUP BY path""", paths):
         stats[r["path"]].update(tool_calls=r["n"], tool_errors=r["e"] or 0, agent_calls=r["a"] or 0)
@@ -202,7 +225,7 @@ def rollup_session(conn: sqlite3.Connection, host: str, profile: str, session_id
         return  # subagent files whose main transcript never arrived
     from .metrics import peak_concurrency
     total = {k: sum(stats[p][k] for p in paths) for k in ("api_calls", "input", "output", "thinking", "cache_read",
-                                                           "cache_write", "tool_calls", "tool_errors")}
+                                                           "cache_write", "tool_calls", "tool_errors", "usd")}
     types: dict[str, int] = {}
     depths: dict[str, int] = {}
     for s in subs:
@@ -241,6 +264,9 @@ def refresh(conn: sqlite3.Connection, archive: str, settings: ParseSettings, ful
     t0 = time.time()
     with conn:
         _start_dirty(conn)
+        # Before parsing, so a fresh database (no rows yet) only records the price version.
+        repriced = _reprice(conn, tz)
+        stats["repriced_sessions"] = repriced
         for path, rel in archive_files(archive):
             seen.add(rel)
             try:
@@ -270,7 +296,7 @@ def refresh(conn: sqlite3.Connection, archive: str, settings: ParseSettings, ful
         now = str(time.time())
         conn.execute("INSERT OR REPLACE INTO meta VALUES('computed_at', ?)", (now,))
         conn.execute("INSERT OR REPLACE INTO meta VALUES('timezone', ?)", (settings.tz,))
-        if stats["parsed"] or stats["removed"]:
+        if stats["parsed"] or stats["removed"] or repriced:
             conn.execute("INSERT OR REPLACE INTO meta VALUES('data_version', ?)", (now,))
     stats["seconds"] = round(time.time() - t0, 2)
     return stats

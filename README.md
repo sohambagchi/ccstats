@@ -65,11 +65,14 @@ curl 'http://spore:8420/api/summary?group=week&by=host'
 curl 'http://spore:8420/api/tools?days=7&top=10'
 curl 'http://spore:8420/api/sessions?days=1'
 curl 'http://spore:8420/api/sessions?days=30&sort=subagents&limit=5'
+curl 'http://spore:8420/api/models?days=30'                  # tokens and estimated $ per model
 curl 'http://spore:8420/api/session?host=spore&profile=claude&id=<session-id>'   # agent tree + timeline spans
 ```
 
 Per-session and per-thread numbers are computed when a transcript changes, not per request; answers
 are cached until the next change. In the dashboard, click a session for its agent tree and timeline.
+
+Dollar figures are estimates at API list prices (`src/ccstats/pricing.py`), not what a subscription bills.
 
 Clients outside loopback, the tailnet, private ranges and spore's attached subnets get 403.
 

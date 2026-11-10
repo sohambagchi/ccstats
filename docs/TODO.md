@@ -8,5 +8,4 @@
 
 ## Backlog
 - [ ] 1 Feature: push from Windows (gram) via WSL or a PowerShell variant #push
-- [ ] 2 Feature: per-day cost estimate from token counts and model prices #metrics
-- [ ] 3 Feature: longest turns / per-prompt view in API and dashboard #api
+- [ ] 2 Feature: longest turns / per-prompt view in API and dashboard #api

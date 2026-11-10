@@ -256,3 +256,43 @@ def test_old_schema_is_rebuilt(tmp_path, settings):
 def ts_epoch(clock):
     from ccstats.parse import iso_ts
     return iso_ts(ts(clock))
+
+
+def test_pricing():
+    from ccstats import pricing
+    # Opus 5.5: $4 in, $20 out, $0.20 cache read; writes at 1.25x (5m) or 2x (1h) of input.
+    assert pricing.usd("claude-opus-5-5", 1_000_000, 0, 0, 0, 0) == pytest.approx(4.0)
+    assert pricing.usd("claude-opus-5-5", 0, 1_000_000, 1_000_000, 0, 0) == pytest.approx(20.2)
+    assert pricing.usd("claude-opus-5-5", 0, 0, 0, 2_000_000, 1_000_000) == pytest.approx(5.0 + 8.0)
+    # Longest prefix wins; date suffixes and [1m] tags are ignored.
+    assert pricing.usd("claude-opus-5[1m]", 1_000_000) == pytest.approx(5.0)
+    assert pricing.usd("claude-haiku-4-5-20251001", 1_000_000) == pytest.approx(1.0)
+    assert pricing.usd("claude-opus-4-1-20250805", 1_000_000) == pytest.approx(15.0)
+    # Haiku 5.5 is billed 5x above 100K prompt tokens.
+    assert pricing.usd("claude-haiku-5-5", 200_000, 0) == pytest.approx(0.1)
+    assert pricing.usd("<synthetic>", 1_000_000) == 0 and not pricing.known("?")
+
+
+def test_costs_roll_up_and_reprice(tmp_path, settings, monkeypatch):
+    from ccstats import pricing
+    archive = tmp_path / "archive"
+    build_archive(archive)
+    conn = store.connect(str(tmp_path / "db.sqlite"))
+    store.refresh(conn, str(archive), settings)
+    [row] = metrics.summary(conn, metrics.Filter(), "total")
+    assert row["cost"]["main"] > 0 and row["cost"]["sub"] > 0
+    assert row["cost"]["total"] == pytest.approx(row["cost"]["main"] + row["cost"]["sub"])
+    [m] = metrics.models(conn, metrics.Filter())
+    assert m["priced"] and m["usd"] == pytest.approx(row["cost"]["total"])
+    s1 = next(s for s in metrics.sessions(conn, metrics.Filter()) if s["session_id"] == "s1")
+    assert s1["usd"] == pytest.approx(row["cost"]["total"])
+    d = metrics.session_detail(conn, "spore", "claude", "s1")
+    assert sum(t["usd"] for t in d["threads"]) == pytest.approx(s1["usd"])
+
+    # A price change re-prices stored rows and rollups without re-parsing anything.
+    monkeypatch.setitem(pricing.PRICES, "claude-opus-5-5", tuple(2 * p for p in pricing.PRICES["claude-opus-5-5"]))
+    monkeypatch.setattr(pricing, "VERSION", "test")
+    st = store.refresh(conn, str(archive), settings)
+    assert st["parsed"] == 0 and st["repriced_sessions"] >= 1
+    s1b = next(s for s in metrics.sessions(conn, metrics.Filter()) if s["session_id"] == "s1")
+    assert s1b["usd"] == pytest.approx(2 * s1["usd"])

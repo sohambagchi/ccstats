@@ -46,6 +46,11 @@ def _num(n: float) -> str:
     return str(int(n))
 
 
+def _usd(x: float) -> str:
+    x = x or 0
+    return f"${x / 1e3:.1f}k" if x >= 1e4 else (f"${x:.0f}" if x >= 100 else f"${x:.2f}")
+
+
 def _table(headers, rows):
     widths = [max(len(str(h)), *(len(str(r[i])) for r in rows)) if rows else len(str(h)) for i, h in enumerate(headers)]
     line = lambda cells: "  ".join(str(c).rjust(w) if i else str(c).ljust(w) for i, (c, w) in enumerate(zip(cells, widths)))  # noqa: E731
@@ -63,14 +68,14 @@ def cmd_report(args, cfg):
         print(json.dumps(rows, indent=1))
         return
     head = ["bucket"] + ([args.by] if args.by else []) + ["sess", "prompts", "subag", "peak", "tools", "err",
-                                                         "out", "out(sub)", "in+cw", "cache rd", "claude", "api", "agent"]
+                                                         "out", "out(sub)", "in+cw", "cache rd", "cost", "claude", "api", "agent"]
     table = []
     for r in rows:
         m, s = r["tokens"]["main"], r["tokens"]["sub"]
         table.append([r["bucket"]] + ([r.get(args.by) or "-"] if args.by else []) + [
             r["sessions"], r["prompts"], r["subagents"], r["peak_concurrent_subagents"], r["tool_calls"], r["tool_errors"],
             _num(m["output"]), _num(s["output"]), _num(m["input"] + m["cache_write"] + s["input"] + s["cache_write"]),
-            _num(m["cache_read"] + s["cache_read"]), _dur(r["claude_s"]), _dur(r["api_s"]), _dur(r["agent_s"])])
+            _num(m["cache_read"] + s["cache_read"]), _usd(r["cost"]["total"]), _dur(r["claude_s"]), _dur(r["api_s"]), _dur(r["agent_s"])])
     _table(head, table)
     if args.tools:
         t = metrics.tools(conn, f, args.tools)
@@ -87,10 +92,10 @@ def cmd_sessions(args, cfg):
         print(json.dumps(rows, indent=1))
         return
     tz = ZoneInfo(cfg.timezone)
-    _table(["last active", "host/profile", "project", "title", "prompts", "subag", "tools", "out", "claude", "agent"],
+    _table(["last active", "host/profile", "project", "title", "prompts", "subag", "tools", "out", "cost", "claude", "agent"],
            [[datetime.fromtimestamp(r["last_ts"], tz).strftime("%m-%d %H:%M") if r["last_ts"] else "-",
              f"{r['host']}/{r['profile']}", r["project"], (r["title"] or "")[:28], r["prompts"], r["subagents"],
-             r["tool_calls"], _num(r["tokens"]["output"]), _dur(r["claude_s"]), _dur(r["agent_s"])] for r in rows])
+             r["tool_calls"], _num(r["tokens"]["output"]), _usd(r["usd"]), _dur(r["claude_s"]), _dur(r["agent_s"])] for r in rows])
 
 
 def cmd_check(args, cfg):

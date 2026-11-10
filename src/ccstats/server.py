@@ -180,10 +180,10 @@ def _filter(q: dict, tz: ZoneInfo) -> metrics.Filter:
 
 ENDPOINTS = {
     "/api/health": "server version, last refresh",
-    "/api/summary": "per-bucket stats; group=day|week|month|total, by=host|profile|project|model",
+    "/api/summary": "per-bucket stats incl. estimated cost; group=day|week|month|total, by=host|profile|project|model",
     "/api/tools": "tool calls by name and Bash executable; top=N",
-    "/api/models": "tokens by model",
-    "/api/sessions": "main sessions with subagents folded in; limit=N, sort=recent|subagents|claude|agent|output",
+    "/api/models": "tokens and estimated cost (usd) by model",
+    "/api/sessions": "main sessions with subagents folded in; limit=N, sort=recent|subagents|claude|agent|output|cost",
     "/api/session": "one session's agent tree, per-thread stats and activity spans; host, profile, id",
     "/api/dimensions": "values for host/profile/project/model filters",
     "/api/hosts": "per host/profile coverage, collection status, registered push hosts",

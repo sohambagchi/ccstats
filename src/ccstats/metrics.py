@@ -69,11 +69,12 @@ def summary(conn: sqlite3.Connection, f: Filter, group: str = "day", by: str | N
     for r in conn.execute(f"""
         SELECT {_bucket(group, 'm')} AS b, {dim} AS d, th.is_subagent AS sub, COUNT(*) AS n,
                SUM(input) AS input, SUM(output) AS output, SUM(thinking) AS thinking,
-               SUM(cache_read) AS cache_read, SUM(cache_write) AS cache_write
+               SUM(cache_read) AS cache_read, SUM(cache_write) AS cache_write, SUM(usd) AS usd
         FROM u_messages m JOIN threads th ON th.path = m.path WHERE {w} GROUP BY b, d, sub""", a):
         row = rows[(r["b"], r["d"])]
         side = "sub" if r["sub"] else "main"
         row[f"api_calls_{side}"] += r["n"]
+        row["cost"][side] += r["usd"] or 0.0
         for k in ("input", "output", "thinking", "cache_read", "cache_write"):
             row["tokens"][side][k] += r[k] or 0
 
@@ -130,6 +131,7 @@ def summary(conn: sqlite3.Connection, f: Filter, group: str = "day", by: str | N
             s = t[side]
             s["total"] = s["input"] + s["output"] + s["cache_read"] + s["cache_write"]
             s["total_no_cache_read"] = s["total"] - s["cache_read"]
+        row["cost"]["total"] = row["cost"]["main"] + row["cost"]["sub"]
         row["bucket"] = b
         if by:
             row[by] = d
@@ -142,6 +144,7 @@ def _empty() -> dict:
     return {"sessions": 0, "prompts": 0, "subagents": 0, "sessions_with_subagents": 0, "agent_types": {},
             "max_spawn_depth": 0, "mean_spawn_depth": 0.0, "peak_concurrent_subagents": 0,
             "api_calls_main": 0, "api_calls_sub": 0, "tokens": {"main": tok(), "sub": tok()},
+            "cost": {"main": 0.0, "sub": 0.0, "total": 0.0},  # estimated $ at API list prices (pricing.py)
             "tool_calls": 0, "tool_calls_sub": 0, "tool_errors": 0, "tool_background": 0,
             "claude_s": 0.0, "api_s": 0.0, "agent_s": 0.0, "agent_api_s": 0.0}
 
@@ -209,16 +212,21 @@ def tools(conn: sqlite3.Connection, f: Filter, top: int = 25) -> dict:
 
 
 def models(conn: sqlite3.Connection, f: Filter) -> list[dict]:
+    """Per-model totals; `usd` is the estimate, `priced` False when pricing.py has no rate for the model."""
+    from .pricing import known
     w, a = f.where("m", model_col="model")
-    return [dict(r) for r in conn.execute(f"""
+    rows = [dict(r) for r in conn.execute(f"""
         SELECT m.model, COUNT(*) AS api_calls, SUM(input) AS input, SUM(output) AS output, SUM(thinking) AS thinking,
-               SUM(cache_read) AS cache_read, SUM(cache_write) AS cache_write
+               SUM(cache_read) AS cache_read, SUM(cache_write) AS cache_write, SUM(usd) AS usd
         FROM u_messages m JOIN threads th ON th.path = m.path WHERE {w}
-        GROUP BY m.model ORDER BY output DESC""", a)]
+        GROUP BY m.model ORDER BY usd DESC, output DESC""", a)]
+    for r in rows:
+        r["priced"] = known(r["model"])
+    return rows
 
 
 SESSION_SORTS = {"recent": "last_ts DESC", "subagents": "subagents DESC, last_ts DESC",
-                 "claude": "claude_s DESC", "agent": "agent_s DESC", "output": "output DESC"}
+                 "claude": "claude_s DESC", "agent": "agent_s DESC", "output": "output DESC", "cost": "usd DESC"}
 
 
 def _session_out(r) -> dict:

@@ -124,6 +124,17 @@ td.tree .t { color: var(--muted); }
   </section>
 
   <section class="grid2">
+    <div class="card">
+      <h2>Estimated cost</h2>
+      <div class="sub">Tokens priced at API list rates; a subscription bills differently</div>
+      <div class="legend"><span><i style="background:var(--s1)"></i>Main sessions</span><span><i style="background:var(--s2)"></i>Subagents</span></div>
+      <div id="chart-cost"></div>
+      <details><summary>Table</summary><div class="scroll" id="table-cost"></div></details>
+    </div>
+    <div class="card"><h2>Cost by model</h2><div class="sub" id="models-sub"></div><div id="models"></div></div>
+  </section>
+
+  <section class="grid2">
     <div class="card"><h2>Tool calls</h2><div class="sub" id="tools-sub"></div><div id="tools"></div></div>
     <div class="card"><h2>Bash commands</h2><div class="sub">By the program each command runs</div><div id="bash"></div></div>
   </section>
@@ -178,6 +189,13 @@ function fmtNum(n) {
   if (Math.abs(n) >= 1e4) return (n / 1e3).toFixed(1) + "K";
   return Math.round(n).toLocaleString();
 }
+function fmtUsd(x) {
+  x = x || 0;
+  if (Math.abs(x) >= 1e4) return "$" + (x / 1e3).toFixed(1) + "K";
+  if (Math.abs(x) >= 100) return "$" + Math.round(x).toLocaleString();
+  if (x > 0 && x < 0.01) return "<$0.01";
+  return "$" + x.toFixed(2);
+}
 function fmtDur(s) {
   s = Math.round(s || 0);
   if (s >= 3600) return Math.floor(s / 3600) + "h " + String(Math.floor(s % 3600 / 60)).padStart(2, "0") + "m";
@@ -226,6 +244,7 @@ function hideTip() { tip.style.display = "none"; }
 // Axis steps: clean numbers for counts, clock-friendly ones for minutes.
 const NUM_STEPS = [];
 for (let e = 0; e < 13; e++) for (const m of [1, 2, 2.5, 5]) NUM_STEPS.push(m * 10 ** e);
+const USD_STEPS = [0.01, 0.02, 0.025, 0.05, 0.1, 0.2, 0.25, 0.5, ...NUM_STEPS];
 const MIN_STEPS = [1, 2, 5, 10, 15, 20, 30, 60, 120, 180, 240, 360, 480, 720, 1440];
 function niceScale(max, steps) {
   const raw = Math.max(max, 1e-9) / 4, last = steps[steps.length - 1];
@@ -308,15 +327,15 @@ function table(container, headers, rows, numericFrom = 1, links) {
   container.replaceChildren(el("table", {}, el("thead", {}, thead), el("tbody", {}, ...body)));
 }
 
-function hbars(container, items, labelKey, valueKey, extra) {
+function hbars(container, items, labelKey, valueKey, extra, fmt = fmtNum, unit = "Calls") {
   container.replaceChildren();
   if (!items.length) { container.append(el("div", { class: "sub" }, "No calls in this range")); return; }
   const max = Math.max(...items.map((i) => i[valueKey]));
   for (const it of items) {
     const fill = el("div", { class: "fill" }); fill.style.width = (100 * it[valueKey] / max) + "%";
     const row = el("div", { class: "hbar", tabindex: 0 }, el("span", { class: "name", title: it[labelKey] }, it[labelKey]),
-                   el("div", { class: "track" }, fill), el("span", { class: "num" }, fmtNum(it[valueKey])));
-    const rows = [["Calls", it[valueKey].toLocaleString(), "var(--s1)"], ...extra(it)];
+                   el("div", { class: "track" }, fill), el("span", { class: "num" }, fmt(it[valueKey])));
+    const rows = [[unit, fmt === fmtNum ? it[valueKey].toLocaleString() : fmt(it[valueKey]), "var(--s1)"], ...extra(it)];
     row.addEventListener("pointermove", (ev) => showTip(ev, it[labelKey], rows));
     row.addEventListener("pointerleave", hideTip);
     container.append(row);
@@ -342,16 +361,17 @@ async function render() {
   document.querySelector("main").classList.add("loading");
   try {
     const group = $("group").value;
-    const [series, total, tools, sessions, byHost, health, spawners] = await Promise.all([
+    const [series, total, tools, sessions, byHost, health, spawners, models] = await Promise.all([
       api("/api/summary", { group }), api("/api/summary", { group: "total" }), api("/api/tools", { top: 12 }),
       api("/api/sessions", { limit: 25 }), api("/api/summary", { group: "total", by: "host" }), getHealth(),
-      api("/api/sessions", { limit: 8, sort: "subagents" }),
+      api("/api/sessions", { limit: 8, sort: "subagents" }), api("/api/models"),
     ]);
     const t = total.rows[0] || { tokens: { main: {}, sub: {} } };
     const tm = t.tokens.main, ts = t.tokens.sub;
     const noCache = (x) => (x.input || 0) + (x.output || 0) + (x.cache_write || 0);
     $("tiles").replaceChildren(
       tile("Claude time", fmtDur(t.claude_s), `${fmtDur(t.api_s)} model in flight · ${fmtDur(t.agent_s)} in subagents`, true),
+      tile("Estimated cost", fmtUsd(t.cost?.total), `${fmtUsd(t.cost?.sub)} in subagents · ${t.sessions ? fmtUsd(t.cost.total / t.sessions) : "-"} per session`),
       tile("Sessions", fmtNum(t.sessions), `${fmtNum(t.prompts)} prompts`),
       tile("Subagents", fmtNum(t.subagents), t.subagents ? `peak ${t.peak_concurrent_subagents} at once · depth ≤ ${t.max_spawn_depth}` : ""),
       tile("Tool calls", fmtNum(t.tool_calls), `${fmtNum(t.tool_errors)} errors · ${fmtNum(t.tool_background)} background`),
@@ -378,16 +398,27 @@ async function render() {
       { name: "Main sessions", color: "var(--s1)", ...tget((r) => noCache(r.tokens.main)) },
       { name: "Subagents", color: "var(--s2)", ...tget((r) => noCache(r.tokens.sub)) },
     ], fmtNum, NUM_STEPS);
-    table($("table-tokens"), [group, "Input", "Output", "Thinking", "Cache write", "Cache read"],
-          rows.map((r) => { const m = r.tokens.main, s = r.tokens.sub; return [r.bucket, fmtNum(m.input + s.input), fmtNum(m.output + s.output), fmtNum(m.thinking + s.thinking), fmtNum(m.cache_write + s.cache_write), fmtNum(m.cache_read + s.cache_read)]; }));
+    table($("table-tokens"), [group, "Input", "Output", "Thinking", "Cache write", "Cache read", "Cost"],
+          rows.map((r) => { const m = r.tokens.main, s = r.tokens.sub; return [r.bucket, fmtNum(m.input + s.input), fmtNum(m.output + s.output), fmtNum(m.thinking + s.thinking), fmtNum(m.cache_write + s.cache_write), fmtNum(m.cache_read + s.cache_read), fmtUsd(r.cost.total)]; }));
+    stackedColumns($("chart-cost"), buckets, [
+      { name: "Main sessions", color: "var(--s1)", ...tget((r) => r.cost.main) },
+      { name: "Subagents", color: "var(--s2)", ...tget((r) => r.cost.sub) },
+    ], fmtUsd, USD_STEPS);
+    table($("table-cost"), [group, "Main", "Subagents", "Total", "Per prompt"],
+          rows.map((r) => [r.bucket, fmtUsd(r.cost.main), fmtUsd(r.cost.sub), fmtUsd(r.cost.total), r.prompts ? fmtUsd(r.cost.total / r.prompts) : "-"]));
+    const priced = models.filter((m) => m.usd > 0), unpriced = models.filter((m) => !m.priced);
+    $("models-sub").textContent = `API calls by model, ${fmtUsd(priced.reduce((a, m) => a + m.usd, 0))} in all`
+      + (unpriced.length ? ` · no price for ${unpriced.map((m) => m.model).join(", ")}` : "");
+    hbars($("models"), priced, "model", "usd", (it) => [["API calls", fmtNum(it.api_calls), null], ["Output", fmtNum(it.output), null],
+          ["Cache reads", fmtNum(it.cache_read), null], ["Cache writes", fmtNum(it.cache_write), null]], fmtUsd, "Cost");
 
     $("tools-sub").textContent = `${fmtNum(t.tool_calls)} calls, ${fmtNum(t.tool_calls_sub)} from subagents`;
     hbars($("tools"), tools.by_name, "name", "calls", (it) => [["Errors", String(it.errors), null], ["Background", String(it.background), null], ["In subagents", String(it.in_subagents), null]]);
     hbars($("bash"), tools.bash, "exe", "calls", (it) => [["Errors", String(it.errors), null], ["Background", String(it.background), null]]);
 
-    table($("hosts"), ["Host", "Sessions", "Prompts", "Subagents", "Claude time", "Agent time", "Output", "Tool calls"],
+    table($("hosts"), ["Host", "Sessions", "Prompts", "Subagents", "Claude time", "Agent time", "Output", "Tool calls", "Cost"],
           byHost.rows.map((r) => [r.host || "-", r.sessions, r.prompts, r.subagents, fmtDur(r.claude_s), fmtDur(r.agent_s),
-                                  fmtNum(r.tokens.main.output + r.tokens.sub.output), fmtNum(r.tool_calls)]));
+                                  fmtNum(r.tokens.main.output + r.tokens.sub.output), fmtNum(r.tool_calls), fmtUsd(r.cost.total)]));
     const types = Object.entries(t.agent_types || {}).sort((a, b) => b[1] - a[1]).map(([name, n]) => ({ name, n }));
     $("agents-sub").textContent = t.subagents
       ? `${fmtNum(t.subagents)} spawned in ${fmtNum(t.sessions_with_subagents)} of ${fmtNum(t.sessions)} sessions · ${fmtDur(t.agent_s)} of agent time`
@@ -395,13 +426,13 @@ async function render() {
     hbars($("agent-types"), types, "name", "n", () => []);
     const withSubs = spawners.filter((s) => s.subagents > 0);
     if (withSubs.length) {
-      table($("top-spawners"), ["Session", "Subagents", "Peak", "Depth", "Agent time"],
+      table($("top-spawners"), ["Session", "Subagents", "Peak", "Depth", "Agent time", "Cost"],
             withSubs.map((s) => [`${s.project} · ${(s.title || s.session_id.slice(0, 8)).slice(0, 34)}`, s.subagents,
-                                 s.peak_concurrent_subagents, s.max_spawn_depth, fmtDur(s.agent_s)]), 1, withSubs.map(sessionHash));
+                                 s.peak_concurrent_subagents, s.max_spawn_depth, fmtDur(s.agent_s), fmtUsd(s.usd)]), 1, withSubs.map(sessionHash));
     } else $("top-spawners").replaceChildren(el("div", { class: "sub" }, "None in this range"));
-    table($("sessions"), ["Last active", "Where", "Project", "Title", "Prompts", "Subagents", "Claude time", "Agent time", "Output"],
+    table($("sessions"), ["Last active", "Where", "Project", "Title", "Prompts", "Subagents", "Claude time", "Agent time", "Output", "Cost"],
           sessions.map((s) => [fmtWhen(s.last_ts), `${s.host}/${s.profile}`, s.project, (s.title || "").slice(0, 40), s.prompts,
-                               s.subagents, fmtDur(s.claude_s), fmtDur(s.agent_s), fmtNum(s.tokens.output)]), 4, sessions.map(sessionHash));
+                               s.subagents, fmtDur(s.claude_s), fmtDur(s.agent_s), fmtNum(s.tokens.output), fmtUsd(s.usd)]), 4, sessions.map(sessionHash));
     const at = health.computed_at ? new Date(health.computed_at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "never";
     $("status").textContent = `updated ${at} · times in ${health.timezone} · v${health.version}`;
   } catch (e) {
@@ -538,7 +569,7 @@ function timeline(d, tz) {
       ...(main ? [] : [["Type", (t.agent_type || "?") + (t.is_fork ? " (fork)" : "") + (t.background ? " · background" : ""), color]]),
       ["Started", t.first_ts ? fmtFull.format(new Date(t.first_ts * 1000)) : "-", null],
       ["Wall time", fmtDur(wall), null], ["Busy", fmtDur(t.claude_s), null],
-      ["Tool calls", fmtNum(t.tool_calls), null], ["Output tokens", fmtNum(t.output), null],
+      ["Tool calls", fmtNum(t.tool_calls), null], ["Output tokens", fmtNum(t.output), null], ["Est. cost", fmtUsd(t.usd), null],
       ...(t.children ? [["Spawned", String(t.children), null]] : []),
       ...(main ? [["Prompts", String(d.prompts.length), null]] : []),
     ];
@@ -569,6 +600,8 @@ async function renderSession(host, profile, id) {
     const depth = Object.entries(s.depth_counts).sort().map(([k, n]) => `${n} at depth ${k}`).join(", ");
     $("s-tiles").replaceChildren(
       tile("Claude time", fmtDur(s.claude_s), `${fmtDur(s.api_s)} model in flight · ${s.prompts} prompts`, true),
+      tile("Estimated cost", fmtUsd(s.usd), (s.subagents ? `${fmtUsd(d.threads.filter((x) => x.is_subagent).reduce((a, x) => a + (x.usd || 0), 0))} in subagents` : "")
+        + (s.cost_usd != null ? `${s.subagents ? " · " : ""}Claude Code says ${fmtUsd(s.cost_usd)}` : "")),
       tile("Subagents spawned", fmtNum(s.subagents), s.subagents ? depth : "none"),
       tile("Agent time", fmtDur(s.agent_s), s.subagents ? `summed over agents, ${s.forks} forks · ${s.background_agents} background` : ""),
       tile("Peak at once", String(s.peak_concurrent_subagents), s.subagents ? `max depth ${s.max_spawn_depth}` : ""),
@@ -579,7 +612,7 @@ async function renderSession(host, profile, id) {
       .map(([k, n]) => el("span", { class: "chip" }, el("b", {}, String(n)), " " + k)));
     const rows = timeline(d, tz);
     const t0 = s.first_ts || 0, off = (ts) => (ts == null ? "-" : "+" + fmtDur(ts - t0));
-    const thead = el("tr", {}, ...["Thread", "Type", "Started", "Wall", "Busy", "Tools", "Output", "Spawned"]
+    const thead = el("tr", {}, ...["Thread", "Type", "Started", "Wall", "Busy", "Tools", "Output", "Cost", "Spawned"]
       .map((h, i) => el("th", { class: i >= 2 ? "n" : "" }, h)));
     const body = rows.map((t) => {
       const name = !t.is_subagent ? "main thread" : (t.description || t.id);
@@ -589,7 +622,7 @@ async function renderSession(host, profile, id) {
       const type = !t.is_subagent ? "" : (t.agent_type || "?") + (t.is_fork ? " · fork" : "");
       return el("tr", {}, cell, el("td", {}, type),
         ...[off(t.first_ts), fmtDur((t.last_ts || 0) - (t.first_ts || 0)), fmtDur(t.claude_s), fmtNum(t.tool_calls),
-            fmtNum(t.output), t.children ? String(t.children) : ""].map((c) => el("td", { class: "n" }, c)));
+            fmtNum(t.output), fmtUsd(t.usd), t.children ? String(t.children) : ""].map((c) => el("td", { class: "n" }, c)));
     });
     $("s-tree").replaceChildren(el("table", {}, el("thead", {}, thead), el("tbody", {}, ...body)));
     document.title = `${s.title || s.session_id.slice(0, 8)} · ccstats`;

@@ -1,5 +1,6 @@
 """HTTP API: endpoints answer from the store; the client allowlist is enforced."""
 import json
+import runpy
 import threading
 import urllib.request
 
@@ -94,3 +95,20 @@ def test_acl(monkeypatch):
         assert acl.allows(ok), ok
     for bad in ("8.8.8.8", "155.98.69.1", "2001:db8::1", "::ffff:8.8.8.8", "garbage"):
         assert not acl.allows(bad), bad
+
+
+def test_query_client(base, tmp_path, capsys):
+    """The served client is preset to the server it came from and prints its answers."""
+    with urllib.request.urlopen(base + "/ccstats-query.py", timeout=5) as r:
+        script = tmp_path / "ccstats-query"
+        script.write_bytes(r.read())
+    cq = runpy.run_path(str(script))
+    assert cq["configured_server"]() == base
+    assert cq["Client"]().get("/api/summary", group="total")["rows"][0]["prompts"] == 2
+    cq["main"](["sessions"])
+    assert "s1" in capsys.readouterr().out
+    cq["main"](["session", "spore", "claude", "s1"])
+    assert "main" in capsys.readouterr().out
+    with pytest.raises(SystemExit, match="404"):
+        cq["main"](["session", "spore", "claude", "nope"])
+

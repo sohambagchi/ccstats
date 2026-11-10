@@ -188,7 +188,11 @@ ENDPOINTS = {
     "/api/dimensions": "values for host/profile/project/model filters",
     "/api/hosts": "per host/profile coverage, collection status, registered push hosts",
     "POST /api/refresh": "re-parse changed archive files now",
+    "/ccstats-query.py": "command-line client for this API, preset to this server",
 }
+REMOTE_SCRIPTS = {"/push.sh": "text/x-shellscript; charset=utf-8",
+                  "/cloudlab-setup.sh": "text/x-shellscript; charset=utf-8",
+                  "/ccstats-query.py": "text/x-python; charset=utf-8"}
 FILTER_DOC = "filters on every stats endpoint: days=N or since=YYYY-MM-DD&until=YYYY-MM-DD, host, profile, project, model"
 
 
@@ -248,10 +252,10 @@ class Handler(BaseHTTPRequestHandler):
         cfg = self.server.cfg
         if path in ("/", "/index.html"):
             return self._send(200, resources.files("ccstats").joinpath("static/index.html").read_bytes(), "text/html; charset=utf-8")
-        if path in ("/push.sh", "/cloudlab-setup.sh"):
+        if path in REMOTE_SCRIPTS:
             body = resources.files("ccstats").joinpath("remote" + path).read_text()
             body = body.replace("@HUB_SSH@", cfg.hub_ssh).replace("@HUB_URL@", self._origin())
-            return self._send(200, body.encode(), "text/x-shellscript; charset=utf-8")
+            return self._send(200, body.encode(), REMOTE_SCRIPTS[path])
         if path == "/api":
             return self._json({"endpoints": ENDPOINTS, "filters": FILTER_DOC})
         if path == "/api/health":

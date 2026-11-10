@@ -129,6 +129,9 @@ def cmd_host(args, cfg):
                   + (f"  error: {st['error']}" if st.get("error") else ""))
 
 
+SCRIPTS = {"push": "push.sh", "cloudlab-setup": "cloudlab-setup.sh", "query": "ccstats-query.py"}
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="ccstats", description="Cross-machine Claude Code usage stats")
     p.add_argument("--config", help="config file (default ~/.config/ccstats/config.toml)")
@@ -175,7 +178,7 @@ def main(argv=None):
     h.add_argument("name", nargs="?")
     h.add_argument("pubkey", nargs="*")
     sc = sub.add_parser("script", help="print a remote helper script")
-    sc.add_argument("which", choices=["push", "cloudlab-setup"])
+    sc.add_argument("which", choices=list(SCRIPTS))
 
     args = p.parse_args(argv)
     # Under systemd stdout is a pipe; flush per line so the journal shows progress as it happens.
@@ -212,8 +215,7 @@ def main(argv=None):
             raise SystemExit(f"usage: ccstats host {args.action} NAME")
         cmd_host(args, cfg)
     elif args.cmd == "script":
-        name = "push.sh" if args.which == "push" else "cloudlab-setup.sh"
-        body = resources.files("ccstats").joinpath(f"remote/{name}").read_text()
+        body = resources.files("ccstats").joinpath(f"remote/{SCRIPTS[args.which]}").read_text()
         port = cfg.listen.rpartition(":")[2]
         sys.stdout.write(body.replace("@HUB_SSH@", cfg.hub_ssh).replace("@HUB_URL@", f"http://{cfg.host}:{port}"))
 

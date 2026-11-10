@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ccstats"
-version = "0.0.14"
+version = "0.0.15"
 description = "Cross-machine Claude Code usage stats: archive, parse, serve"
 requires-python = ">=3.11"
 dependencies = []
@@ -16,7 +16,7 @@ ccstats = "ccstats.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-ccstats = ["static/*.html", "remote/*.sh"]
+ccstats = ["static/*.html", "remote/*.sh", "remote/*.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -15,6 +15,7 @@ Console: https://claude.ai/artifact/SfziVxpWd83cbuxQEFcy1c
 
 ## Changes
 
+- [2026-11-10-0051-query-client](changelog/2026-11-10-0051-query-client.md) — `ccstats-query`, a Python client for the API
 - [2026-11-09-2055-hourly-push-schedule](changelog/2026-11-09-2055-hourly-push-schedule.md) — push timers run hourly
 - [2026-11-09-2047-hourly-hub-schedule](changelog/2026-11-09-2047-hourly-hub-schedule.md) — hub collect, pulls and refresh run hourly
 - [2026-11-09-2043-readme-stats-hook](changelog/2026-11-09-2043-readme-stats-hook.md) — README stats table refreshed by a pre-commit hook

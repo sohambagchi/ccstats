@@ -195,3 +195,64 @@ def test_changed_file_is_reparsed(tmp_path, settings):
 ])
 def test_bash_executable(cmd, exe):
     assert bash_executable(cmd) == exe
+
+
+def test_session_rollup_and_agent_tree(tmp_path, settings):
+    archive = tmp_path / "archive"
+    build_archive(archive)
+    # Agent b2 was spawned by agent a1's Agent call, not by the main thread.
+    rel, recs, meta = _subagent("10:00:00", "10:05:00", "a1", "Explore", 1)
+    recs.insert(2, assistant("10:02:59", "m-a1-spawn", [tool_use("tu-b2", "Agent", prompt="nested")], u=usage(out=5)))
+    write(archive, rel, recs, meta={**meta, "isFork": True, "requestShape": "background"})
+
+    conn = store.connect(str(tmp_path / "db.sqlite"))
+    assert store.refresh(conn, str(archive), settings)["sessions"] == 1
+    [s] = metrics.sessions(conn, metrics.Filter())
+    assert s["subagents"] == 2 and s["forks"] == 1 and s["background_agents"] == 1
+    assert s["agent_types"] == {"Explore": 1, "Plan": 1} and s["depth_counts"] == {"1": 1, "2": 1}
+    assert s["tool_calls"] == 5 and s["tokens"]["output"] == 785
+
+    d = metrics.session_detail(conn, "spore", "claude", "s1")
+    by_id = {t["id"]: t for t in d["threads"]}
+    assert by_id["b2"]["parent"] == "a1" and by_id["a1"]["parent"] == "main" and by_id["main"]["parent"] is None
+    assert by_id["a1"]["agent_calls"] == 1 and by_id["main"]["claude_s"] == pytest.approx(633)
+    assert by_id["b2"]["spans"] == [[ts_epoch("10:03:00"), ts_epoch("10:10:00")]]
+    assert [p["ts"] for p in d["prompts"]] == [ts_epoch("10:00:00"), ts_epoch("10:30:00")]
+    assert metrics.session_detail(conn, "spore", "claude", "nope") is None
+
+    # Nothing changed: no session is recomputed.
+    assert store.refresh(conn, str(archive), settings)["sessions"] == 0
+
+
+def test_dedup_winner_moves_incrementally(tmp_path, settings):
+    """A copy sorting before the original takes over its records; the original's rollup follows."""
+    archive = tmp_path / "archive"
+    write(archive, MAIN, main_session())
+    conn = store.connect(str(tmp_path / "db.sqlite"))
+    store.refresh(conn, str(archive), settings)
+    early = "spore/claude/projects/-home-u-dev-proj/a0-copy.jsonl"
+    shutil.copy(archive / MAIN, archive / early)
+    st = store.refresh(conn, str(archive), settings)
+    assert st["parsed"] == 1 and st["sessions"] == 2
+    out = {s["session_id"]: s["tokens"]["output"] for s in metrics.sessions(conn, metrics.Filter())}
+    assert out == {"a0-copy": 700, "s1": 0}
+    (archive / early).unlink()
+    store.refresh(conn, str(archive), settings)
+    assert {s["session_id"]: s["tokens"]["output"] for s in metrics.sessions(conn, metrics.Filter())} == {"s1": 700}
+
+
+def test_old_schema_is_rebuilt(tmp_path, settings):
+    db = str(tmp_path / "db.sqlite")
+    conn = store.connect(db)
+    conn.execute("UPDATE meta SET v = '1' WHERE k = 'schema'")
+    conn.execute("CREATE TABLE leftover(x)")
+    conn.commit()
+    conn.close()
+    conn = store.connect(db)
+    assert conn.execute("SELECT v FROM meta WHERE k = 'schema'").fetchone()[0] == str(store.SCHEMA_VERSION)
+    assert conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'leftover'").fetchone() is None
+
+
+def ts_epoch(clock):
+    from ccstats.parse import iso_ts
+    return iso_ts(ts(clock))

@@ -15,6 +15,7 @@ import subprocess
 import threading
 import time
 import traceback
+from collections import OrderedDict
 from datetime import date, datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -33,6 +34,7 @@ _BASE_NETS = [
 ]
 MAX_CONCURRENT = 16
 REFRESH_EVERY_S = 300
+CACHE_ENTRIES = 512
 
 
 def attached_networks() -> list[str]:
@@ -91,7 +93,7 @@ class Refresher:
                     finally:
                         conn.close()
                 print(f"refresh ({reason}): {st['parsed']} parsed, {st['unchanged']} unchanged, "
-                      f"{st['removed']} removed in {st['seconds']}s", flush=True)
+                      f"{st['removed']} removed, {st['sessions']} sessions rolled up in {st['seconds']}s", flush=True)
             except Exception:  # keep serving; the next round retries
                 traceback.print_exc()
             time.sleep(2)  # coalesce bursts of pushes
@@ -109,6 +111,7 @@ class Server(ThreadingHTTPServer):
         self.acl = Acl(cfg.allow)
         self.refresher = refresher
         self.slots = threading.BoundedSemaphore(MAX_CONCURRENT)
+        self.cache = ResponseCache(CACHE_ENTRIES)
 
     def server_bind(self):
         if self.address_family == socket.AF_INET6:
@@ -120,6 +123,38 @@ class Server(ThreadingHTTPServer):
             return True
         print(f"{client_address[0]} denied: not loopback, tailnet, private or an attached subnet", flush=True)
         return _deny(request)
+
+
+class NotFound(Exception):
+    pass
+
+
+class ResponseCache:
+    """API answers keyed by (data version, local day, URL).
+
+    Stored numbers only change when a refresh parses or drops a file, which bumps
+    the data version; the local day is in the key because `days=N` is relative to
+    today. So a page load re-reads nothing unless a transcript changed.
+    """
+
+    def __init__(self, size: int):
+        self.size = size
+        self.lock = threading.Lock()
+        self.items: OrderedDict[tuple, bytes] = OrderedDict()
+
+    def get(self, key: tuple) -> bytes | None:
+        with self.lock:
+            body = self.items.get(key)
+            if body is not None:
+                self.items.move_to_end(key)
+            return body
+
+    def put(self, key: tuple, body: bytes):
+        with self.lock:
+            self.items[key] = body
+            self.items.move_to_end(key)
+            while len(self.items) > self.size:
+                self.items.popitem(last=False)
 
 
 def _deny(sock) -> bool:
@@ -148,7 +183,8 @@ ENDPOINTS = {
     "/api/summary": "per-bucket stats; group=day|week|month|total, by=host|profile|project|model",
     "/api/tools": "tool calls by name and Bash executable; top=N",
     "/api/models": "tokens by model",
-    "/api/sessions": "main sessions with subagents folded in; limit=N",
+    "/api/sessions": "main sessions with subagents folded in; limit=N, sort=recent|subagents|claude|agent|output",
+    "/api/session": "one session's agent tree, per-thread stats and activity spans; host, profile, id",
     "/api/dimensions": "values for host/profile/project/model filters",
     "/api/hosts": "per host/profile coverage, collection status, registered push hosts",
     "POST /api/refresh": "re-parse changed archive files now",
@@ -165,11 +201,15 @@ class Handler(BaseHTTPRequestHandler):
         # One line per request: client, request line, status (the journal adds the time).
         print(f"{self.client_address[0]} {fmt % args}", flush=True)
 
-    def _send(self, status: int, body: bytes, ctype: str):
+    def _send(self, status: int, body: bytes, ctype: str, etag: str | None = None):
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        if etag:
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "no-cache")
+        else:
+            self.send_header("Cache-Control", "no-store")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         if self.command != "HEAD":
@@ -186,6 +226,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": "busy"}, HTTPStatus.SERVICE_UNAVAILABLE)
         try:
             self._get()
+        except NotFound as e:
+            self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
         except (ValueError, KeyError) as e:
             self._json({"error": str(e)}, HTTPStatus.BAD_REQUEST)
         except Exception as e:  # report, keep serving
@@ -219,26 +261,50 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": "no database yet; run `ccstats compute`"}, HTTPStatus.SERVICE_UNAVAILABLE)
         conn = store.connect(cfg.db, readonly=True)
         try:
-            f = _filter(q, ZoneInfo(cfg.timezone))
-            one = lambda k, d=None: (q.get(k) or [d])[0]  # noqa: E731
-            if path == "/api/summary":
-                group = one("group", "day")
-                return self._json({"group": group, "by": one("by"), "filter": f.__dict__,
-                                   "rows": metrics.summary(conn, f, group, one("by") or None)})
-            if path == "/api/tools":
-                return self._json(metrics.tools(conn, f, int(one("top", 25))))
-            if path == "/api/models":
-                return self._json(metrics.models(conn, f))
-            if path == "/api/sessions":
-                return self._json(metrics.sessions(conn, f, min(int(one("limit", 100)), 1000)))
-            if path == "/api/dimensions":
-                return self._json(metrics.dimensions(conn))
             if path == "/api/hosts":
+                # Collection status and archive times move without a data change; never cached.
                 return self._json({"threads": metrics.hosts(conn), "collect": collect.load_status(cfg),
                                    "push_hosts": hosts.registered(), "archive": archive_mtimes(cfg)})
+            tz = ZoneInfo(cfg.timezone)
+            key = (store.data_version(conn), datetime.now(tz).date().isoformat(), self.path)
+            etag = '"' + "-".join(key[:2]) + '"'
+            if self.headers.get("If-None-Match") == etag:
+                return self._send(HTTPStatus.NOT_MODIFIED, b"", "application/json", etag)
+            body = self.server.cache.get(key)
+            if body is None:
+                obj = self._answer(conn, path, q, tz)
+                if obj is None:
+                    return self._json({"error": "not found", "endpoints": ENDPOINTS}, HTTPStatus.NOT_FOUND)
+                body = json.dumps(obj, default=str).encode()
+                self.server.cache.put(key, body)
+            return self._send(200, body, "application/json", etag)
         finally:
             conn.close()
-        self._json({"error": "not found", "endpoints": ENDPOINTS}, HTTPStatus.NOT_FOUND)
+
+    def _answer(self, conn, path: str, q: dict, tz: ZoneInfo):
+        f = _filter(q, tz)
+        one = lambda k, d=None: (q.get(k) or [d])[0]  # noqa: E731
+        if path == "/api/summary":
+            group = one("group", "day")
+            return {"group": group, "by": one("by"), "filter": f.__dict__,
+                    "rows": metrics.summary(conn, f, group, one("by") or None)}
+        if path == "/api/tools":
+            return metrics.tools(conn, f, int(one("top", 25)))
+        if path == "/api/models":
+            return metrics.models(conn, f)
+        if path == "/api/sessions":
+            return metrics.sessions(conn, f, min(int(one("limit", 100)), 1000), one("sort", "recent"))
+        if path == "/api/session":
+            for k in ("host", "profile", "id"):
+                if not one(k):
+                    raise ValueError(f"{k} is required")
+            d = metrics.session_detail(conn, one("host"), one("profile"), one("id"))
+            if d is None:
+                raise NotFound(f"no session {one('host')}/{one('profile')}/{one('id')}")
+            return d
+        if path == "/api/dimensions":
+            return metrics.dimensions(conn)
+        return None
 
     def _origin(self) -> str:
         host = self.headers.get("Host") or f"{self.server.cfg.host}:{self.server.server_address[1]}"

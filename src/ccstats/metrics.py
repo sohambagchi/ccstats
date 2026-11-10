@@ -5,6 +5,7 @@ days (`day`), ISO weeks (`week`), months (`month`) or one bucket (`total`).
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
@@ -216,40 +217,63 @@ def models(conn: sqlite3.Connection, f: Filter) -> list[dict]:
         GROUP BY m.model ORDER BY output DESC""", a)]
 
 
-def sessions(conn: sqlite3.Connection, f: Filter, limit: int = 100) -> list[dict]:
-    """Main sessions active in the range, newest first, with their subagents folded in."""
-    w, a = f.where("x")
-    keys = conn.execute(f"""
-        SELECT th.path, MAX(x.ts) AS last FROM (SELECT path, ts, day FROM u_messages UNION ALL SELECT path, ts, day FROM u_prompts) x
-        JOIN threads th ON th.path = x.path WHERE th.is_subagent = 0 AND {w}
-        GROUP BY th.path ORDER BY last DESC LIMIT ?""", [*a, limit]).fetchall()
+SESSION_SORTS = {"recent": "last_ts DESC", "subagents": "subagents DESC, last_ts DESC",
+                 "claude": "claude_s DESC", "agent": "agent_s DESC", "output": "output DESC"}
+
+
+def _session_out(r) -> dict:
+    d = dict(r)
+    d["tokens"] = {k: d.pop(k) for k in ("input", "output", "thinking", "cache_read", "cache_write")}
+    d["agent_types"] = json.loads(d["agent_types"] or "{}")
+    d["depth_counts"] = json.loads(d["depth_counts"] or "{}")
+    return d
+
+
+def sessions(conn: sqlite3.Connection, f: Filter, limit: int = 100, sort: str = "recent") -> list[dict]:
+    """Main sessions active in the range, with their subagents folded in (precomputed rollups)."""
+    if sort not in SESSION_SORTS:
+        raise ValueError(f"sort must be one of {tuple(SESSION_SORTS)}")
+    cond, args = ["1=1"], []
+    if f.since:
+        cond.append("last_day >= ?")
+        args.append(f.since)
+    if f.until:
+        cond.append("first_day <= ?")
+        args.append(f.until)
+    for dim in DIMENSIONS:
+        if getattr(f, dim):
+            cond.append(f"{dim} = ?")
+            args.append(getattr(f, dim))
+    rows = conn.execute(f"SELECT * FROM sessions WHERE {' AND '.join(cond)} ORDER BY {SESSION_SORTS[sort]} LIMIT ?",
+                        [*args, limit]).fetchall()
+    return [_session_out(r) for r in rows]
+
+
+def session_detail(conn: sqlite3.Connection, host: str, profile: str, session_id: str) -> dict | None:
+    """One session: its rollup, every thread (main + subagents) as a tree with stats and activity spans,
+    and the main thread's prompts, for the hierarchy and timeline views."""
+    row = conn.execute("SELECT * FROM sessions WHERE host = ? AND profile = ? AND session_id = ?",
+                       (host, profile, session_id)).fetchone()
+    if row is None:
+        return None
+    threads = conn.execute("""
+        SELECT th.path, th.agent_id, th.is_subagent, th.agent_type, th.spawn_depth, th.description, th.first_ts,
+               th.last_ts, th.model, th.is_fork, th.background, th.spans, th.parent_path, s.*
+        FROM threads th LEFT JOIN thread_stats s ON s.path = th.path
+        WHERE th.host = ? AND th.profile = ? AND th.session_id = ?""", (host, profile, session_id)).fetchall()
+    ids = {t["path"]: (t["agent_id"] or "main") for t in threads}
     out = []
-    for k in keys:
-        th = conn.execute("SELECT * FROM threads WHERE path = ?", (k["path"],)).fetchone()
-        subs = conn.execute("SELECT * FROM threads WHERE is_subagent = 1 AND host = ? AND profile = ? AND session_id = ?",
-                            (th["host"], th["profile"], th["session_id"])).fetchall()
-        paths = [th["path"]] + [s["path"] for s in subs]
-        q = ",".join("?" * len(paths))
-        tok = conn.execute(f"""SELECT COALESCE(SUM(input),0) i, COALESCE(SUM(output),0) o, COALESCE(SUM(thinking),0) th,
-                               COALESCE(SUM(cache_read),0) cr, COALESCE(SUM(cache_write),0) cw, COUNT(*) n
-                               FROM u_messages WHERE path IN ({q})""", paths).fetchone()
-        busy = {r["sub"]: r for r in conn.execute(f"""
-            SELECT (path != ?) AS sub, SUM(claude_s) c, SUM(api_s) api FROM u_busy WHERE path IN ({q}) GROUP BY sub""",
-            [th["path"], *paths])}
-        ntools = conn.execute(f"SELECT COUNT(*) FROM u_tools WHERE path IN ({q})", paths).fetchone()[0]
-        out.append({
-            "host": th["host"], "profile": th["profile"], "project": th["project"], "cwd": th["cwd"],
-            "session_id": th["session_id"], "title": th["title"], "model": th["model"], "cc_version": th["cc_version"],
-            "first_ts": th["first_ts"], "last_ts": th["last_ts"], "prompts": th["n_prompts"],
-            "compactions": th["n_compactions"], "cost_usd": th["cost_usd"],
-            "subagents": len(subs), "peak_concurrent_subagents": peak_concurrency(subs),
-            "max_spawn_depth": max([s["spawn_depth"] or 1 for s in subs], default=0),
-            "api_calls": tok["n"], "tool_calls": ntools,
-            "tokens": {"input": tok["i"], "output": tok["o"], "thinking": tok["th"], "cache_read": tok["cr"], "cache_write": tok["cw"]},
-            "claude_s": busy[0]["c"] if 0 in busy else 0.0, "api_s": busy[0]["api"] if 0 in busy else 0.0,
-            "agent_s": busy[1]["c"] if 1 in busy else 0.0,
-        })
-    return out
+    for t in threads:
+        d = {k: t[k] for k in t.keys() if k != "path"}
+        d["id"] = ids[t["path"]]
+        d["parent"] = ids.get(t["parent_path"]) if t["is_subagent"] else None
+        if t["is_subagent"] and d["parent"] is None:
+            d["parent"] = "main"  # spawning call not found (e.g. compacted away): hang it off the main thread
+        d["spans"] = json.loads(t["spans"] or "[]")
+        out.append(d)
+    out.sort(key=lambda d: (d["is_subagent"], d["first_ts"] or 0))
+    prompts = [dict(r) for r in conn.execute("SELECT ts, claude_s FROM u_prompts WHERE path = ? ORDER BY ts", (row["path"],))]
+    return {"session": _session_out(row), "threads": out, "prompts": prompts}
 
 
 def dimensions(conn: sqlite3.Connection) -> dict:

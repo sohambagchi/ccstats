@@ -16,7 +16,10 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 # Bump when parse output changes, so cached files are parsed again.
-PARSER_VERSION = 1
+PARSER_VERSION = 2
+
+# Idle gaps shorter than this inside a thread's activity spans are bridged.
+SPAN_BRIDGE_S = 2.0
 
 # Tools whose tool_use -> tool_result interval is the human deciding, not Claude working.
 DECISION_TOOLS = frozenset({"AskUserQuestion", "ExitPlanMode"})
@@ -89,6 +92,17 @@ def union(intervals):
         else:
             out.append([s, e])
     return out
+
+
+def activity_spans(intervals, bridge: float = SPAN_BRIDGE_S) -> list[list[float]]:
+    """Merged busy intervals with short gaps bridged, rounded for compact storage (timeline lanes)."""
+    out: list[list[float]] = []
+    for s, e in intervals:
+        if out and s - out[-1][1] <= bridge:
+            out[-1][1] = max(out[-1][1], e)
+        else:
+            out.append([s, e])
+    return [[round(s, 1), round(e, 1)] for s, e in out]
 
 
 def bash_executable(cmd: str) -> str:
@@ -287,7 +301,8 @@ def parse_file(path: str, rel: str, settings: ParseSettings) -> Parsed:
     # Without an api-request record the start is guessed from the record before the
     # response; a guess over an hour before the response is a gap, not a request.
     api_iv = [(m["start"] if m["last"] - m["start"] <= 3600 else m["first"], m["last"]) for m in msgs.values()]
-    busy_rows = _busy_rows(rel, prompts, union(api_iv + tool_iv), union(api_iv), msgs, tz)
+    claude_iv = union(api_iv + tool_iv)
+    busy_rows = _busy_rows(rel, prompts, claude_iv, union(api_iv), msgs, tz)
 
     # Each prompt's Claude time, for per-prompt averages and longest turns.
     per_prompt: dict[str, list[float]] = {}
@@ -318,6 +333,8 @@ def parse_file(path: str, rel: str, settings: ParseSettings) -> Parsed:
         "n_prompts": len(prompts), "n_compactions": info["compactions"],
         "cost_usd": cost.get("totalCostUSD"),
         "cost_state": json.dumps(cost.get("modelUsage")) if cost.get("modelUsage") else None,
+        "is_fork": int(bool(meta.get("isFork"))), "background": int(meta.get("requestShape") == "background"),
+        "spans": json.dumps(activity_spans(claude_iv)),
     }
     return Parsed(thread=thread, messages=out_msgs, tools=out_tools, prompts=out_prompts, busy=busy_rows)
 

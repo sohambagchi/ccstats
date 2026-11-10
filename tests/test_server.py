@@ -53,6 +53,27 @@ def test_endpoints(base):
         assert "@HUB_URL@" not in body and base in body
 
 
+def test_session_and_cache(base, cfg):
+    d = get(base + "/api/session?host=spore&profile=claude&id=s1")
+    assert d["session"]["subagents"] == 2 and len(d["threads"]) == 3
+    with pytest.raises(urllib.error.HTTPError) as e:
+        get(base + "/api/session?host=spore&profile=claude&id=nope")
+    assert e.value.code == 404
+    with urllib.request.urlopen(base + "/api/sessions", timeout=5) as r:
+        etag = r.headers["ETag"]
+    req = urllib.request.Request(base + "/api/sessions", headers={"If-None-Match": etag})
+    with pytest.raises(urllib.error.HTTPError) as e:
+        urllib.request.urlopen(req, timeout=5)
+    assert e.value.code == 304
+    # New data changes the version, so the same URL is answered afresh.
+    conn = store.connect(cfg.db)
+    conn.execute("INSERT OR REPLACE INTO meta VALUES('data_version', 'next')")
+    conn.commit()
+    conn.close()
+    with urllib.request.urlopen(req, timeout=5) as r:
+        assert r.status == 200 and r.headers["ETag"] != etag
+
+
 def test_bad_request(base):
     with pytest.raises(urllib.error.HTTPError) as e:
         get(base + "/api/summary?group=year")

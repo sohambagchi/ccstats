@@ -21,7 +21,7 @@ def _compute(cfg, full=False, quiet=False):
                                   log=None if quiet else (lambda m: print(f"  {m}")))
         finally:
             conn.close()
-    print(f"compute: {stats['parsed']} parsed, {stats['unchanged']} unchanged, {stats['removed']} removed in {stats['seconds']}s")
+    print(f"compute: {stats['parsed']} parsed, {stats['unchanged']} unchanged, {stats['removed']} removed, {stats['sessions']} sessions rolled up in {stats['seconds']}s")
     return stats
 
 

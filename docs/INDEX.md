@@ -9,7 +9,9 @@ Console: https://claude.ai/artifact/SfziVxpWd83cbuxQEFcy1c
 - [2026-11-07-0159-cloudlab-transcripts-on-proj](adr/2026-11-07-0159-cloudlab-transcripts-on-proj.md) — CloudLab transcripts live on /proj, hub pulls
 - [2026-11-07-0159-hub-web-server-open-reads](adr/2026-11-07-0159-hub-web-server-open-reads.md) — stdlib HTTP API + dashboard, IP allowlist, no artifact job
 - [2026-11-07-0159-claude-time-definition](adr/2026-11-07-0159-claude-time-definition.md) — what Claude time measures
+- [2026-11-09-1945-precomputed-session-rollups](adr/2026-11-09-1945-precomputed-session-rollups.md) — per-session numbers computed once per transcript change; API answers cached by data version
 
 ## Changes
 
+- [2026-11-09-1945-session-rollups-agent-tree-timeline](changelog/2026-11-09-1945-session-rollups-agent-tree-timeline.md) — cached rollups, subagent hierarchy, session timeline
 - [2026-11-07-0159-hub-archive-api-dashboard](changelog/2026-11-07-0159-hub-archive-api-dashboard.md) — first working hub

@@ -1,0 +1,8 @@
+# Compute per-session numbers once per transcript change; cache API answers by data version
+
+**Status:** accepted
+
+**Context:** Every dashboard load re-ran the `u_*` de-duplication views, each a window function over all rows (~0.14 s per scan at 60k messages), and `/api/sessions` repeated that scan three times per session: 13 s for 25 sessions, so loads timed out.
+**Decision:** `refresh` keeps the winning copy of each record in `u_*` tables, re-picked only for the record keys a changed file touched. It then rebuilds `thread_stats`, each subagent's `parent_path` (the thread whose `Agent` call has the subagent's `toolUseId`) and one `sessions` row, only for the sessions those files or moved winners belong to. All of this runs in one transaction. `meta.data_version` changes only when a file is parsed or dropped. The server caches JSON answers keyed by (data version, local day, URL) and sends that pair as an ETag. Schema mismatches drop the derived database and re-parse the archive automatically.
+**Alternatives:** keep views and add only an HTTP cache: the first load after every push would still take 13 s. Precompute every summary bucket: filters (host × profile × project × range) multiply the work, and summaries are already 0.2 s against the `u_*` tables.
+**Consequences:** `/api/sessions` and `/api/session` are lookups (~1 ms); a summary is computed once per data change. A full rebuild takes ~17 s for 706 files; a refresh with nothing new takes ~0.3 s. Session totals cover the whole session, not just the filtered range; a session is in range if its main thread's first..last day overlaps it.

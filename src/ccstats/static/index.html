@@ -67,6 +67,21 @@ details { margin-top: 6px; } summary { color: var(--ink-2); font-size: 12px; cur
 #tip .row b { margin-left: auto; padding-left: 12px; }
 #tip .key { width: 10px; height: 2px; }
 .err { color: var(--critical); }
+tr.link { cursor: pointer; } tr.link:hover td, tr.link:focus td { background: var(--grid); outline: none; }
+a.back { color: var(--ink-2); text-decoration: none; font-size: 13px; } a.back:hover { color: var(--ink); }
+.meta { color: var(--ink-2); font-size: 12px; margin: 2px 0 12px; overflow-wrap: anywhere; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0; }
+.chip { font-size: 12px; border: 1px solid var(--ring); border-radius: 999px; padding: 1px 8px; color: var(--ink-2); }
+.chip b { color: var(--ink); font-weight: 600; }
+.tl-scroll { max-height: 560px; overflow-y: auto; overflow-x: hidden; border-top: 1px solid var(--grid); }
+.tl-scroll.scroll { overflow-x: auto; }
+.tl-lane:hover .tl-hit, .tl-lane:focus .tl-hit { fill: var(--grid); }
+.tl-lane:focus { outline: none; }
+svg text.tl-label { fill: var(--ink-2); }
+svg text.tl-label.main { fill: var(--ink); font-weight: 600; }
+td.tree { white-space: nowrap; max-width: 340px; overflow: hidden; text-overflow: ellipsis; }
+td.tree .t { color: var(--muted); }
+.view[hidden] { display: none; }
 @media (max-width: 520px) { .tile.hero { grid-column: span 1; } .tile.hero .value { font-size: 40px; } }
 </style>
 </head>
@@ -76,6 +91,7 @@ details { margin-top: 6px; } summary { color: var(--ink-2); font-size: 12px; cur
     <h1>Claude Code usage</h1>
     <span class="sub" id="status">loading…</span>
   </header>
+  <div class="view" id="view-dash">
   <div class="filters" role="group" aria-label="Filters">
     <select id="days" aria-label="Date range">
       <option value="1">Today</option><option value="7">Last 7 days</option>
@@ -112,6 +128,11 @@ details { margin-top: 6px; } summary { color: var(--ink-2); font-size: 12px; cur
     <div class="card"><h2>Bash commands</h2><div class="sub">By the program each command runs</div><div id="bash"></div></div>
   </section>
 
+  <section class="grid2">
+    <div class="card"><h2>Subagents by type</h2><div class="sub" id="agents-sub"></div><div id="agent-types"></div></div>
+    <div class="card"><h2>Sessions that spawned the most subagents</h2><div class="sub">In the range; click a row for its agent tree and timeline</div><div class="scroll" id="top-spawners"></div></div>
+  </section>
+
   <section class="card" style="margin-bottom:12px">
     <h2>By host and profile</h2>
     <div class="scroll" id="hosts"></div>
@@ -119,8 +140,30 @@ details { margin-top: 6px; } summary { color: var(--ink-2); font-size: 12px; cur
 
   <section class="card">
     <h2>Recent sessions</h2>
+    <div class="sub">Click a row for its agent tree and timeline</div>
     <div class="scroll" id="sessions"></div>
   </section>
+  </div>
+
+  <div class="view" id="view-session" hidden>
+    <a class="back" href="#">← All sessions</a>
+    <h1 id="s-title" style="margin-top:8px"></h1>
+    <div class="meta" id="s-meta"></div>
+    <section class="tiles" id="s-tiles"></section>
+    <section class="card" style="margin-bottom:12px">
+      <h2>Timeline</h2>
+      <div class="sub" id="s-tl-sub"></div>
+      <div class="legend"><span><i style="background:var(--s1)"></i>Main thread busy</span><span><i style="background:var(--s2)"></i>Subagent busy</span><span><i style="background:var(--s2);opacity:.3"></i>Subagent alive</span><span><i style="background:var(--ink);width:2px"></i>Prompt</span></div>
+      <div id="s-axis"></div>
+      <div class="tl-scroll" id="s-timeline"></div>
+    </section>
+    <section class="card">
+      <h2>Agent tree</h2>
+      <div class="sub">Who spawned whom; times are from the session start</div>
+      <div class="chips" id="s-types"></div>
+      <div class="scroll tl-scroll" style="margin-top:8px" id="s-tree"></div>
+    </section>
+  </div>
 </main>
 <div id="tip" role="tooltip"></div>
 <script>
@@ -251,9 +294,17 @@ function stackedColumns(container, buckets, series, fmt, steps) {
   container.append(svg);
 }
 
-function table(container, headers, rows, numericFrom = 1) {
+function table(container, headers, rows, numericFrom = 1, links) {
   const thead = el("tr", {}, ...headers.map((h, i) => el("th", { class: i >= numericFrom ? "n" : "" }, h)));
-  const body = rows.map((r) => el("tr", {}, ...r.map((c, i) => el("td", { class: i >= numericFrom ? "n" : "" }, c))));
+  const body = rows.map((r, ri) => {
+    const tr = el("tr", {}, ...r.map((c, i) => el("td", { class: i >= numericFrom ? "n" : "" }, c)));
+    if (links && links[ri]) {
+      tr.className = "link"; tr.tabIndex = 0;
+      tr.addEventListener("click", () => { location.hash = links[ri]; });
+      tr.addEventListener("keydown", (ev) => { if (ev.key === "Enter") location.hash = links[ri]; });
+    }
+    return tr;
+  });
   container.replaceChildren(el("table", {}, el("thead", {}, thead), el("tbody", {}, ...body)));
 }
 
@@ -291,9 +342,10 @@ async function render() {
   document.querySelector("main").classList.add("loading");
   try {
     const group = $("group").value;
-    const [series, total, tools, sessions, byHost, health] = await Promise.all([
+    const [series, total, tools, sessions, byHost, health, spawners] = await Promise.all([
       api("/api/summary", { group }), api("/api/summary", { group: "total" }), api("/api/tools", { top: 12 }),
-      api("/api/sessions", { limit: 25 }), api("/api/summary", { group: "total", by: "host" }), fetch("/api/health").then((r) => r.json()),
+      api("/api/sessions", { limit: 25 }), api("/api/summary", { group: "total", by: "host" }), getHealth(),
+      api("/api/sessions", { limit: 8, sort: "subagents" }),
     ]);
     const t = total.rows[0] || { tokens: { main: {}, sub: {} } };
     const tm = t.tokens.main, ts = t.tokens.sub;
@@ -336,10 +388,20 @@ async function render() {
     table($("hosts"), ["Host", "Sessions", "Prompts", "Subagents", "Claude time", "Agent time", "Output", "Tool calls"],
           byHost.rows.map((r) => [r.host || "-", r.sessions, r.prompts, r.subagents, fmtDur(r.claude_s), fmtDur(r.agent_s),
                                   fmtNum(r.tokens.main.output + r.tokens.sub.output), fmtNum(r.tool_calls)]));
-    table($("sessions"), ["Last active", "Where", "Project", "Title", "Prompts", "Subagents", "Claude time", "Output"],
-          sessions.map((s) => [new Date(s.last_ts * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }),
-                               `${s.host}/${s.profile}`, s.project, (s.title || "").slice(0, 40), s.prompts, s.subagents,
-                               fmtDur(s.claude_s), fmtNum(s.tokens.output)]), 4);
+    const types = Object.entries(t.agent_types || {}).sort((a, b) => b[1] - a[1]).map(([name, n]) => ({ name, n }));
+    $("agents-sub").textContent = t.subagents
+      ? `${fmtNum(t.subagents)} spawned in ${fmtNum(t.sessions_with_subagents)} of ${fmtNum(t.sessions)} sessions · ${fmtDur(t.agent_s)} of agent time`
+      : "No subagents in this range";
+    hbars($("agent-types"), types, "name", "n", () => []);
+    const withSubs = spawners.filter((s) => s.subagents > 0);
+    if (withSubs.length) {
+      table($("top-spawners"), ["Session", "Subagents", "Peak", "Depth", "Agent time"],
+            withSubs.map((s) => [`${s.project} · ${(s.title || s.session_id.slice(0, 8)).slice(0, 34)}`, s.subagents,
+                                 s.peak_concurrent_subagents, s.max_spawn_depth, fmtDur(s.agent_s)]), 1, withSubs.map(sessionHash));
+    } else $("top-spawners").replaceChildren(el("div", { class: "sub" }, "None in this range"));
+    table($("sessions"), ["Last active", "Where", "Project", "Title", "Prompts", "Subagents", "Claude time", "Agent time", "Output"],
+          sessions.map((s) => [fmtWhen(s.last_ts), `${s.host}/${s.profile}`, s.project, (s.title || "").slice(0, 40), s.prompts,
+                               s.subagents, fmtDur(s.claude_s), fmtDur(s.agent_s), fmtNum(s.tokens.output)]), 4, sessions.map(sessionHash));
     const at = health.computed_at ? new Date(health.computed_at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "never";
     $("status").textContent = `updated ${at} · times in ${health.timezone} · v${health.version}`;
   } catch (e) {
@@ -349,15 +411,217 @@ async function render() {
   }
 }
 
+// ---- Session view: agent tree and timeline ----------------------------------------------
+
+let healthP = null;
+function getHealth() { return (healthP = fetch("/api/health").then((r) => r.json())); }
+function fmtWhen(ts) {
+  return ts ? new Date(ts * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "-";
+}
+function sessionHash(s) { return `#session/${encodeURIComponent(s.host)}/${encodeURIComponent(s.profile)}/${encodeURIComponent(s.session_id)}`; }
+function clock(tz, withDate, withSec) {
+  return new Intl.DateTimeFormat([], { timeZone: tz, hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+    ...(withSec ? { second: "2-digit" } : {}), ...(withDate ? { month: "short", day: "numeric" } : {}) });
+}
+
+// Main thread first, then each agent under the thread that spawned it, in spawn order.
+function treeOrder(threads) {
+  const kids = new Map();
+  for (const t of threads) if (t.parent) (kids.get(t.parent) || kids.set(t.parent, []).get(t.parent)).push(t);
+  for (const k of kids.values()) k.sort((a, b) => (a.first_ts || 0) - (b.first_ts || 0));
+  const out = [], seen = new Set();
+  const walk = (t, level) => {
+    if (seen.has(t.id)) return; seen.add(t.id);
+    out.push({ ...t, level, children: (kids.get(t.id) || []).length });
+    for (const c of kids.get(t.id) || []) walk(c, level + 1);
+  };
+  const main = threads.find((t) => !t.is_subagent);
+  if (main) walk(main, 0);
+  for (const t of threads) walk(t, 1);  // anything unreachable
+  return out;
+}
+
+// Time -> x with long idle stretches squeezed to a fixed width, so a session resumed
+// the next day still shows its bursts of work at a readable scale.
+const GAP_S = 600, GAP_PX = 18;
+function timeScale(threads, prompts, x0, x1) {
+  const iv = [];
+  for (const t of threads) {
+    for (const [a, b] of t.spans) iv.push([a, b]);
+    if (t.first_ts != null) iv.push([t.first_ts, t.first_ts + 1]);
+    if (t.last_ts != null) iv.push([t.last_ts - 1, t.last_ts]);
+  }
+  for (const p of prompts) iv.push([p.ts, p.ts + 1]);
+  iv.sort((a, b) => a[0] - b[0]);
+  const segs = [];
+  for (const [a, b] of iv) {
+    const last = segs[segs.length - 1];
+    if (last && a - last[1] <= GAP_S) last[1] = Math.max(last[1], b); else segs.push([a, Math.max(b, a + 1)]);
+  }
+  if (!segs.length) segs.push([0, 1]);
+  const active = segs.reduce((n, [a, b]) => n + (b - a), 0);
+  // Idle bands never take more than a third of the width.
+  const gap = segs.length > 1 ? Math.min(GAP_PX, (x1 - x0) / 3 / (segs.length - 1)) : 0;
+  const k = Math.max(1e-6, (x1 - x0 - gap * (segs.length - 1)) / active);
+  const starts = []; let x = x0;
+  for (const [a, b] of segs) { starts.push(x); x += (b - a) * k + gap; }
+  const fn = (ts) => {
+    for (let i = 0; i < segs.length; i++) {
+      const [a, b] = segs[i];
+      if (ts < a) return i === 0 ? x0 : starts[i] - gap / 2;
+      if (ts <= b) return starts[i] + (ts - a) * k;
+    }
+    return x1;
+  };
+  return { x: fn, segs, starts, k, gap };
+}
+
+const TICK_STEPS = [5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400];
+function axis(svg, sc, tz, H, y) {
+  const step = TICK_STEPS.find((s) => s * sc.k >= 76) || 86400;
+  const fmtT = clock(tz, false, step < 60), fmtD = clock(tz, true, false);
+  let lastDay = null;
+  sc.segs.forEach(([a, b], i) => {
+    for (let t = Math.ceil(a / step) * step; t <= b; t += step) {
+      const xx = sc.x(t), day = new Date(t * 1000).toLocaleDateString([], { timeZone: tz });
+      svg.append(svgEl("line", { x1: xx, x2: xx, y1: y, y2: H, stroke: "var(--grid)", "stroke-width": 1 }));
+      const label = svgEl("text", { x: xx, y: y - 4, "text-anchor": "middle" });
+      label.textContent = day !== lastDay ? fmtD.format(new Date(t * 1000)) : fmtT.format(new Date(t * 1000));
+      lastDay = day; svg.append(label);
+    }
+    if (i > 0) {
+      const gx = sc.starts[i] - sc.gap, idle = a - sc.segs[i - 1][1], pad = sc.gap > 8 ? 3 : 1;
+      const g = svgEl("rect", { x: gx + pad, y: y, width: Math.max(1, sc.gap - 2 * pad), height: H - y, fill: "var(--grid)", opacity: 0.6 });
+      const title = svgEl("title", {}); title.textContent = `${fmtDur(idle)} idle`; g.append(title); svg.append(g);
+    }
+  });
+}
+
+function timeline(d, tz) {
+  const rows = treeOrder(d.threads);
+  const box = $("s-timeline"), W = Math.max(box.clientWidth, 320);
+  const LBL = W < 560 ? 110 : 200, X1 = W - 8, LANE = 18, BAR = 10, AX = 22;
+  const sc = timeScale(rows, d.prompts, LBL + 4, X1);
+  const H = rows.length * LANE + 4;
+
+  const ax = svgEl("svg", { viewBox: `0 0 ${W} ${AX}`, height: AX, preserveAspectRatio: "xMinYMin meet" });
+  axis(ax, sc, tz, AX, AX);
+  $("s-axis").replaceChildren(ax);
+
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, height: H, role: "img", "aria-label": "Agent timeline", preserveAspectRatio: "xMinYMin meet" });
+  axis(svg, sc, tz, H, 0);
+  const fmtFull = clock(tz, true, true);
+  rows.forEach((t, i) => {
+    const y = i * LANE + 2, cy = y + (LANE - BAR) / 2, main = !t.is_subagent;
+    const color = main ? "var(--s1)" : "var(--s2)";
+    const g = svgEl("g", { class: "tl-lane", tabindex: 0 });
+    g.append(svgEl("rect", { class: "tl-hit", x: 0, y, width: W, height: LANE, fill: "transparent" }));
+    const name = main ? "main thread" : (t.description || t.agent_type || t.id);
+    const label = svgEl("text", { class: "tl-label" + (main ? " main" : ""), x: 4 + Math.min(t.level, 6) * 10, y: y + LANE / 2 + 4 });
+    const maxCh = Math.floor((LBL - 8 - Math.min(t.level, 6) * 10) / 6.2);
+    label.textContent = name.length > maxCh ? name.slice(0, maxCh - 1) + "…" : name;
+    g.append(label);
+    if (t.first_ts != null && t.last_ts != null && !main) {
+      const a = sc.x(t.first_ts), b = Math.max(sc.x(t.last_ts), a + 2);
+      g.append(svgEl("rect", { x: a, y: cy, width: b - a, height: BAR, rx: 2, fill: color, opacity: 0.28 }));
+    }
+    for (const [s0, s1] of t.spans) {
+      const a = sc.x(s0), b = Math.max(sc.x(s1), a + 1.5);
+      g.append(svgEl("rect", { x: a, y: cy, width: b - a, height: BAR, fill: color }));
+    }
+    if (main) for (const p of d.prompts) {
+      const xx = sc.x(p.ts);
+      g.append(svgEl("rect", { x: xx - 1, y: y + 1, width: 2, height: LANE - 2, fill: "var(--ink)" }));
+    }
+    const wall = (t.last_ts || 0) - (t.first_ts || 0);
+    const tipRows = [
+      ...(main ? [] : [["Type", (t.agent_type || "?") + (t.is_fork ? " (fork)" : "") + (t.background ? " · background" : ""), color]]),
+      ["Started", t.first_ts ? fmtFull.format(new Date(t.first_ts * 1000)) : "-", null],
+      ["Wall time", fmtDur(wall), null], ["Busy", fmtDur(t.claude_s), null],
+      ["Tool calls", fmtNum(t.tool_calls), null], ["Output tokens", fmtNum(t.output), null],
+      ...(t.children ? [["Spawned", String(t.children), null]] : []),
+      ...(main ? [["Prompts", String(d.prompts.length), null]] : []),
+    ];
+    g.addEventListener("pointermove", (ev) => showTip(ev, name, tipRows));
+    g.addEventListener("pointerleave", hideTip);
+    g.addEventListener("focus", () => { const r = g.getBoundingClientRect(); showTip({ clientX: r.left + LBL, clientY: r.bottom }, name, tipRows); });
+    g.addEventListener("blur", hideTip);
+    svg.append(g);
+  });
+  box.replaceChildren(svg);
+  const span = (d.session.last_ts || 0) - (d.session.first_ts || 0), gaps = sc.segs.length - 1;
+  $("s-tl-sub").textContent = `One lane per thread, indented under the thread that spawned it · ${fmtDur(span)} wall clock`
+    + (gaps ? ` · ${gaps} idle stretch${gaps > 1 ? "es" : ""} over ${GAP_S / 60} min squeezed (grey bands)` : "");
+  return rows;
+}
+
+async function renderSession(host, profile, id) {
+  document.querySelector("main").classList.add("loading");
+  try {
+    const qs = new URLSearchParams({ host, profile, id });
+    const [r, health] = await Promise.all([fetch("/api/session?" + qs), healthP || getHealth()]);
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.statusText);
+    const s = d.session, tz = health.timezone;
+    $("s-title").textContent = s.title || s.session_id;
+    $("s-meta").textContent = [`${s.host}/${s.profile}`, s.project, s.branch && `on ${s.branch}`, s.model,
+      `${fmtWhen(s.first_ts)} → ${fmtWhen(s.last_ts)}`, `v${s.cc_version || "?"}`, s.session_id].filter(Boolean).join(" · ");
+    const depth = Object.entries(s.depth_counts).sort().map(([k, n]) => `${n} at depth ${k}`).join(", ");
+    $("s-tiles").replaceChildren(
+      tile("Claude time", fmtDur(s.claude_s), `${fmtDur(s.api_s)} model in flight · ${s.prompts} prompts`, true),
+      tile("Subagents spawned", fmtNum(s.subagents), s.subagents ? depth : "none"),
+      tile("Agent time", fmtDur(s.agent_s), s.subagents ? `summed over agents, ${s.forks} forks · ${s.background_agents} background` : ""),
+      tile("Peak at once", String(s.peak_concurrent_subagents), s.subagents ? `max depth ${s.max_spawn_depth}` : ""),
+      tile("Tool calls", fmtNum(s.tool_calls), `${fmtNum(s.tool_errors)} errors · ${fmtNum(s.api_calls)} API calls`),
+      tile("Output tokens", fmtNum(s.tokens.output), `${fmtNum(s.tokens.thinking)} thinking · ${s.compactions} compactions`),
+    );
+    $("s-types").replaceChildren(...Object.entries(s.agent_types).sort((a, b) => b[1] - a[1])
+      .map(([k, n]) => el("span", { class: "chip" }, el("b", {}, String(n)), " " + k)));
+    const rows = timeline(d, tz);
+    const t0 = s.first_ts || 0, off = (ts) => (ts == null ? "-" : "+" + fmtDur(ts - t0));
+    const thead = el("tr", {}, ...["Thread", "Type", "Started", "Wall", "Busy", "Tools", "Output", "Spawned"]
+      .map((h, i) => el("th", { class: i >= 2 ? "n" : "" }, h)));
+    const body = rows.map((t) => {
+      const name = !t.is_subagent ? "main thread" : (t.description || t.id);
+      const cell = el("td", { class: "tree", title: name });
+      cell.style.paddingLeft = (6 + Math.min(t.level, 6) * 14) + "px";
+      cell.append(t.level ? el("span", { class: "t" }, "└ ") : "", name);
+      const type = !t.is_subagent ? "" : (t.agent_type || "?") + (t.is_fork ? " · fork" : "");
+      return el("tr", {}, cell, el("td", {}, type),
+        ...[off(t.first_ts), fmtDur((t.last_ts || 0) - (t.first_ts || 0)), fmtDur(t.claude_s), fmtNum(t.tool_calls),
+            fmtNum(t.output), t.children ? String(t.children) : ""].map((c) => el("td", { class: "n" }, c)));
+    });
+    $("s-tree").replaceChildren(el("table", {}, el("thead", {}, thead), el("tbody", {}, ...body)));
+    document.title = `${s.title || s.session_id.slice(0, 8)} · ccstats`;
+    $("status").textContent = `times in ${tz} · v${health.version}`;
+  } catch (e) {
+    $("s-title").textContent = "Session unavailable";
+    $("s-meta").replaceChildren(el("span", { class: "err" }, "Error: " + e.message));
+  } finally {
+    document.querySelector("main").classList.remove("loading");
+  }
+}
+
+function route() {
+  hideTip();
+  const m = location.hash.match(/^#session\/([^/]+)\/([^/]+)\/([^/]+)$/);
+  $("view-dash").hidden = !!m;
+  $("view-session").hidden = !m;
+  if (m) { window.scrollTo(0, 0); return renderSession(...m.slice(1).map(decodeURIComponent)); }
+  document.title = "ccstats";
+  return render();
+}
+
 for (const id of ["days", "group", "host", "profile", "project"]) $(id).addEventListener("change", render);
 $("refresh").addEventListener("click", async () => {
   await fetch("/api/refresh", { method: "POST" });
-  setTimeout(async () => { await loadDims(); render(); }, 2500);
+  setTimeout(async () => { await loadDims(); route(); }, 2500);
 });
 let resizeTimer;
-window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(render, 200); });
-loadDims().then(render, (e) => { $("status").textContent = "Error: " + e.message; });
-setInterval(render, 5 * 60 * 1000);
+window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(route, 200); });
+window.addEventListener("hashchange", route);
+loadDims().then(route, (e) => { $("status").textContent = "Error: " + e.message; });
+setInterval(route, 5 * 60 * 1000);
 </script>
 </body>
 </html>

@@ -70,7 +70,11 @@ curl 'http://spore:8420/api/session?host=spore&profile=claude&id=<session-id>'  
 ```
 
 Per-session and per-thread numbers are computed when a transcript changes, not per request; answers
-are cached until the next change. In the dashboard, click a session for its agent tree and timeline.
+are cached until the next change.
+
+The dashboard has tabs (Overview, Cost & tokens, Tools, Agents, Sessions, Hosts) and keeps its filters in
+the URL, so `http://spore:8420/?days=7&host=yeast#sessions` is a shareable view. Click a session for its agent
+tree and timeline; keys `1`–`6` switch tabs, `/` searches sessions.
 
 Dollar figures are estimates at API list prices (`src/ccstats/pricing.py`), not what a subscription bills.
 

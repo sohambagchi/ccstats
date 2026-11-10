@@ -14,6 +14,7 @@ Console: https://claude.ai/artifact/SfziVxpWd83cbuxQEFcy1c
 
 ## Changes
 
+- [2026-11-09-2035-dashboard-tabs](changelog/2026-11-09-2035-dashboard-tabs.md) — tabbed dashboard, filters in the URL, hosts and collection status
 - [2026-11-09-2016-estimated-cost](changelog/2026-11-09-2016-estimated-cost.md) — dollar estimates in API, dashboard and CLI
 - [2026-11-09-1945-session-rollups-agent-tree-timeline](changelog/2026-11-09-1945-session-rollups-agent-tree-timeline.md) — cached rollups, subagent hierarchy, session timeline
 - [2026-11-07-0159-hub-archive-api-dashboard](changelog/2026-11-07-0159-hub-archive-api-dashboard.md) — first working hub

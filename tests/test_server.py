@@ -3,6 +3,7 @@ import json
 import runpy
 import threading
 import urllib.request
+from pathlib import Path
 
 import pytest
 
@@ -112,3 +113,16 @@ def test_query_client(base, tmp_path, capsys):
     with pytest.raises(SystemExit, match="404"):
         cq["main"](["session", "spore", "claude", "nope"])
 
+
+def test_api_docs_cover_every_endpoint():
+    """The dashboard's API tab and its markdown mirror document every endpoint the server lists."""
+    root = Path(__file__).resolve().parents[1]
+    tab = (root / "src/ccstats/static/index.html").read_text()
+    doc = next((root / "docs/analysis-artifacts").glob("*-http-api-reference.md")).read_text()
+    for ep in server.ENDPOINTS:
+        if ep.endswith(".py"):
+            continue  # the client has its own section, checked below
+        ep = ep if ep.startswith("POST ") else "GET " + ep
+        assert f">{ep}</h3>" in tab, ep
+        assert f"### {ep}\n" in doc, ep
+    assert "/ccstats-query.py" in tab and "/ccstats-query.py" in doc

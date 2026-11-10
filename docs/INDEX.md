@@ -2,6 +2,10 @@
 
 Console: https://claude.ai/artifact/SfziVxpWd83cbuxQEFcy1c
 
+## Analysis
+
+- [2026-11-10-0051-http-api-reference](analysis-artifacts/2026-11-10-0051-http-api-reference.md) — how to query the HTTP API, and the Python client
+
 ## Decisions
 
 - [2026-11-07-0159-archive-raw-then-compute](adr/2026-11-07-0159-archive-raw-then-compute.md) — append-only archive; stats recomputed from it
@@ -15,6 +19,7 @@ Console: https://claude.ai/artifact/SfziVxpWd83cbuxQEFcy1c
 
 ## Changes
 
+- [2026-11-10-0051-api-tab](changelog/2026-11-10-0051-api-tab.md) — API reference tab in the dashboard
 - [2026-11-10-0051-query-client](changelog/2026-11-10-0051-query-client.md) — `ccstats-query`, a Python client for the API
 - [2026-11-09-2055-hourly-push-schedule](changelog/2026-11-09-2055-hourly-push-schedule.md) — push timers run hourly
 - [2026-11-09-2047-hourly-hub-schedule](changelog/2026-11-09-2047-hourly-hub-schedule.md) — hub collect, pulls and refresh run hourly

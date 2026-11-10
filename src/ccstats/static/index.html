@@ -113,6 +113,31 @@ tr.link { cursor: pointer; } tr.link:hover td, tr.link:focus td { background: va
 .hbar .num { text-align: right; font-variant-numeric: tabular-nums; }
 .hbar:focus { outline: none; } .hbar:focus .name { color: var(--ink); }
 
+/* API tab: reference text */
+.doc { max-width: 920px; }
+.doc .card { padding: 14px 18px; }
+.doc h2 { font-size: 16px; margin-bottom: 6px; }
+.doc h3 { font: 600 13.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; margin: 20px 0 4px; padding-top: 12px; border-top: 1px solid var(--grid); }
+.doc h2 + p + h3, .doc h2 + h3 { border-top: 0; padding-top: 0; }
+.doc p, .doc li { max-width: 78ch; }
+.doc p { margin: 6px 0; }
+.doc ul { margin: 6px 0; padding-left: 20px; }
+.doc li { margin: 2px 0; }
+.doc code { font: 12.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--grid); border-radius: 4px; padding: 0 4px; overflow-wrap: anywhere; }
+.doc pre { font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--page); border: 1px solid var(--grid); border-radius: 6px; padding: 8px 10px; margin: 8px 0; overflow-x: auto; }
+.doc pre code, .doc pre .base { background: none; padding: 0; }
+.doc pre .prompt { color: var(--muted); user-select: none; }
+.doc pre.ex { display: flex; align-items: baseline; gap: 12px; }
+.doc pre.ex > span { flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
+.doc pre.ex a { color: var(--ink-2); font-family: system-ui, sans-serif; font-size: 12px; text-decoration: none; white-space: nowrap; }
+.doc pre.ex a:hover { color: var(--ink); }
+.doc td { vertical-align: top; }
+.doc td.nw { white-space: nowrap; }
+.doc table.fields td:first-child { width: 38%; }
+.toc { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 12px; }
+.toc button { border-radius: 999px; font-size: 12px; padding: 2px 10px; color: var(--ink-2); }
+.toc button:hover { color: var(--ink); }
+
 #tip { position: fixed; pointer-events: none; background: var(--surface); border: 1px solid var(--ring); border-radius: 8px; padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,.12); display: none; z-index: 10; min-width: 140px; }
 #tip .t { color: var(--ink-2); margin-bottom: 4px; }
 #tip .row { display: flex; align-items: center; gap: 6px; }
@@ -148,6 +173,7 @@ td.tree .t { color: var(--muted); }
         <a href="#agents" data-tab="agents">Agents</a>
         <a href="#sessions" data-tab="sessions">Sessions</a>
         <a href="#hosts" data-tab="hosts">Hosts</a>
+        <a href="#api" data-tab="api">API</a>
       </nav>
       <div class="status"><span class="sub" id="status">loading…</span>
         <button id="refresh" title="Re-parse newly arrived transcripts">Refresh</button></div>
@@ -272,6 +298,193 @@ td.tree .t { color: var(--muted); }
         <div class="scroll" id="h-collect"></div>
         <div class="chips" id="h-push"></div>
       </div>
+    </div>
+  </section>
+
+  <!-- API: how to query this server; mirrored in docs/analysis-artifacts/2026-11-10-0051-http-api-reference.md; change both together -->
+  <section class="view doc" id="view-api" hidden>
+    <nav class="toc" id="api-toc" aria-label="On this page">
+      <button data-jump="api-start">Quick start</button><button data-jump="api-filters">Filters</button>
+      <button data-jump="api-endpoints">Endpoints</button><button data-jump="api-units">Units</button>
+      <button data-jump="api-cache">Caching &amp; errors</button><button data-jump="api-client">Python client</button>
+    </nav>
+
+    <div class="card mb" id="api-start">
+      <h2>Quick start</h2>
+      <p>Every number on this dashboard comes from a JSON API on the same server, at <code class="base">http://spore:8420</code>.
+        There is no token: reads are open to loopback, the tailnet (100.64.0.0/10), private ranges (10/8, 172.16/12, 192.168/16, fc00::/7)
+        and the server's own subnets, plus any <code>allow</code> networks in its config. Everyone else gets an empty 403.</p>
+      <pre class="ex" data-path="/api/summary?days=7&amp;group=total"></pre>
+      <pre class="ex" data-path="/api/sessions?days=3&amp;sort=cost&amp;limit=5"></pre>
+      <pre class="ex" data-path="/api"></pre>
+      <p><code>GET /api</code> lists the endpoints in machine-readable form. Day boundaries are local to the server's
+        time zone, <b class="tz">America/Denver</b>. Answers carry <code>Access-Control-Allow-Origin: *</code>, so a page
+        on another origin can <code>fetch()</code> them.</p>
+    </div>
+
+    <div class="card mb" id="api-filters">
+      <h2>Filters</h2>
+      <p>Every stats endpoint (summary, models, tools, sessions) takes the same filters. All are optional; without a date
+        filter the whole archive is covered.</p>
+      <div class="scroll"><table>
+        <thead><tr><th>Parameter</th><th>Value</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>days</code></td><td class="nw">N</td><td>The last N local days, today included. <code>days=1</code> is today. Ignored if <code>since</code> is set.</td></tr>
+          <tr><td><code>since</code></td><td class="nw">YYYY-MM-DD</td><td>First local day, inclusive.</td></tr>
+          <tr><td><code>until</code></td><td class="nw">YYYY-MM-DD</td><td>Last local day, inclusive.</td></tr>
+          <tr><td><code>host</code></td><td class="nw">name</td><td>Machine the transcripts came from, e.g. <code>spore</code>.</td></tr>
+          <tr><td><code>profile</code></td><td class="nw">name</td><td>Claude Code config dir on that host, e.g. <code>claude</code> for <code>~/.claude</code>.</td></tr>
+          <tr><td><code>project</code></td><td class="nw">name</td><td>Project (working directory name). Subagents count toward their session's project.</td></tr>
+          <tr><td><code>model</code></td><td class="nw">model id</td><td>Restricts tokens, cost and tool calls to responses from that model. Prompts, time and session counts are not split by model.</td></tr>
+        </tbody>
+      </table></div>
+      <p>Valid values for <code>host</code>, <code>profile</code>, <code>project</code> and <code>model</code> come from <code>/api/dimensions</code>.
+        A malformed date is a 400.</p>
+    </div>
+
+    <div class="card mb" id="api-endpoints">
+      <h2>Endpoints</h2>
+
+      <h3 id="api-summary">GET /api/summary</h3>
+      <p>Stats per time bucket, optionally split by one dimension.</p>
+      <ul>
+        <li><code>group</code> = <code>day</code> (default), <code>week</code> (ISO week, <code>2026-W45</code>), <code>month</code> (<code>2026-11</code>) or <code>total</code></li>
+        <li><code>by</code> = <code>host</code>, <code>profile</code>, <code>project</code> or <code>model</code>; each row then has that key.
+          With <code>by=model</code> only token, cost and tool fields are filled.</li>
+        <li>Plus the filters.</li>
+      </ul>
+      <pre class="ex" data-path="/api/summary?group=week&amp;by=host&amp;days=28"></pre>
+      <p>Answer: <code>{"group", "by", "filter", "rows": [...]}</code>, rows sorted by bucket. Each row:</p>
+      <div class="scroll"><table class="fields"><tbody>
+        <tr><td><code>bucket</code></td><td>Day, week, month or <code>"total"</code>.</td></tr>
+        <tr><td><code>sessions</code></td><td>Main sessions with a response or prompt in the bucket.</td></tr>
+        <tr><td><code>prompts</code></td><td>Human prompts.</td></tr>
+        <tr><td><code>subagents</code>, <code>sessions_with_subagents</code>, <code>agent_types</code></td><td>Subagents started, sessions that started any, and a count per agent type.</td></tr>
+        <tr><td><code>max_spawn_depth</code>, <code>mean_spawn_depth</code>, <code>peak_concurrent_subagents</code></td><td>How deep subagents nested and how many ran at once.</td></tr>
+        <tr><td><code>claude_s</code>, <code>api_s</code></td><td>Claude time and its API-only part, main threads, in seconds.</td></tr>
+        <tr><td><code>agent_s</code>, <code>agent_api_s</code></td><td>The same for subagents, summed across parallel agents.</td></tr>
+        <tr><td><code>api_calls_main</code>, <code>api_calls_sub</code></td><td>Model responses.</td></tr>
+        <tr><td><code>tokens.main</code>, <code>tokens.sub</code></td><td><code>input</code>, <code>output</code>, <code>thinking</code>, <code>cache_read</code>, <code>cache_write</code>, <code>total</code>, <code>total_no_cache_read</code>.</td></tr>
+        <tr><td><code>cost</code></td><td><code>{"main", "sub", "total"}</code>, estimated USD.</td></tr>
+        <tr><td><code>tool_calls</code>, <code>tool_calls_sub</code>, <code>tool_errors</code>, <code>tool_background</code></td><td>All tool calls, those made by subagents, those that errored, those run in the background.</td></tr>
+      </tbody></table></div>
+
+      <h3 id="api-models">GET /api/models</h3>
+      <p>Tokens and estimated cost per model, most expensive first. Filters apply.</p>
+      <pre class="ex" data-path="/api/models?days=30"></pre>
+      <p>Rows: <code>model</code>, <code>api_calls</code>, <code>input</code>, <code>output</code>, <code>thinking</code>, <code>cache_read</code>,
+        <code>cache_write</code>, <code>usd</code>, <code>priced</code> (false when the model isn't in the price table, so <code>usd</code> is 0).</p>
+
+      <h3 id="api-tools">GET /api/tools</h3>
+      <p>Tool calls by tool name, and Bash commands by the program they run. <code>top</code> = rows per list (default 25). Filters apply.</p>
+      <pre class="ex" data-path="/api/tools?days=7&amp;top=10"></pre>
+      <p>Answer: <code>{"by_name": [{name, calls, errors, background, in_subagents, seconds}], "bash": [{exe, calls, errors, background}]}</code>.
+        <code>seconds</code> is wall time from call to result.</p>
+
+      <h3 id="api-sessions">GET /api/sessions</h3>
+      <p>Main sessions active in the range, each with its subagents folded in.</p>
+      <ul>
+        <li><code>sort</code> = <code>recent</code> (default), <code>cost</code>, <code>claude</code>, <code>agent</code>, <code>subagents</code> or <code>output</code></li>
+        <li><code>limit</code> = rows, default 100, at most 1000</li>
+        <li>Plus the filters, except <code>model</code>. A session is in range if any of it falls in range.</li>
+      </ul>
+      <pre class="ex" data-path="/api/sessions?days=7&amp;sort=subagents&amp;limit=5"></pre>
+      <p>Rows: <code>host</code>, <code>profile</code>, <code>session_id</code>, <code>project</code>, <code>cwd</code>, <code>title</code>,
+        <code>model</code>, <code>cc_version</code>, <code>branch</code>, <code>first_ts</code>, <code>last_ts</code>, <code>first_day</code>, <code>last_day</code>,
+        <code>prompts</code>, <code>compactions</code>, <code>subagents</code>, <code>agent_types</code>, <code>depth_counts</code>, <code>forks</code>,
+        <code>background_agents</code>, <code>max_spawn_depth</code>, <code>peak_concurrent_subagents</code>, <code>api_calls</code>, <code>tool_calls</code>,
+        <code>tool_errors</code>, <code>claude_s</code>, <code>api_s</code>, <code>agent_s</code>, <code>usd</code>, <code>tokens</code>
+        (<code>input</code>, <code>output</code>, <code>thinking</code>, <code>cache_read</code>, <code>cache_write</code>), <code>path</code> (in the archive).
+        <code>cost_usd</code> is Claude Code's own figure when it recorded one, else null.</p>
+
+      <h3 id="api-session">GET /api/session</h3>
+      <p>One session in full: its row as above, every thread (main and subagents) with stats and busy spans, and its prompts.
+        <code>host</code>, <code>profile</code> and <code>id</code> (the <code>session_id</code>) are required; an unknown session is a 404.</p>
+      <pre class="ex" data-path="/api/session?host=spore&amp;profile=claude&amp;id=SESSION_ID" data-no-open></pre>
+      <p>Answer: <code>{"session", "threads", "prompts"}</code>. Each thread has <code>id</code> (<code>"main"</code> or the agent id),
+        <code>parent</code> (null for main), <code>is_subagent</code>, <code>agent_type</code>, <code>description</code>, <code>spawn_depth</code>,
+        <code>is_fork</code>, <code>background</code>, <code>model</code>, <code>first_ts</code>, <code>last_ts</code>,
+        <code>spans</code> (<code>[[start, end], ...]</code> when it was busy), and <code>api_calls</code>, <code>input</code>, <code>output</code>,
+        <code>thinking</code>, <code>cache_read</code>, <code>cache_write</code>, <code>tool_calls</code>, <code>tool_errors</code>,
+        <code>agent_calls</code>, <code>claude_s</code>, <code>api_s</code>, <code>usd</code>. Build the tree by following <code>parent</code>.
+        <code>prompts</code> is <code>[{ts, claude_s}]</code>: each human prompt and the Claude time it led to.</p>
+
+      <h3 id="api-dimensions">GET /api/dimensions</h3>
+      <p>Values for the filters: <code>{"host": [...], "profile": [...], "project": [...], "model": [...], "first_day", "last_day"}</code>. No parameters.</p>
+      <pre class="ex" data-path="/api/dimensions"></pre>
+
+      <h3 id="api-hosts">GET /api/hosts</h3>
+      <p>Where data comes from, all time, unfiltered and never cached:</p>
+      <ul>
+        <li><code>threads</code>: per host and profile, <code>sessions</code>, <code>subagents</code>, <code>first_ts</code>, <code>last_ts</code></li>
+        <li><code>archive</code>: <code>"host/profile"</code> → time the newest file arrived</li>
+        <li><code>collect</code>: per source the hub collects (<code>"host/profile"</code> or <code>"pull:name"</code>), <code>last_attempt</code>, <code>last_success</code>, <code>error</code>, <code>via</code></li>
+        <li><code>push_hosts</code>: hosts registered to push to the hub</li>
+      </ul>
+      <pre class="ex" data-path="/api/hosts"></pre>
+
+      <h3 id="api-health">GET /api/health</h3>
+      <p><code>{"ok", "version", "timezone", "computed_at", "last_refresh"}</code>; <code>last_refresh</code> has the counts of files
+        <code>parsed</code>, <code>unchanged</code> and <code>removed</code> and when (<code>at</code>). Answers even before the database exists.</p>
+      <pre class="ex" data-path="/api/health"></pre>
+
+      <h3 id="api-refresh">POST /api/refresh</h3>
+      <p>Re-parses transcripts that changed since the last refresh, in the background. Answers <code>202 {"queued": true}</code> at once;
+        new numbers appear a few seconds later. Safe to call any time; the server also refreshes hourly.</p>
+      <pre class="ex" data-path="/api/refresh" data-method="POST"></pre>
+    </div>
+
+    <div class="card mb" id="api-units">
+      <h2>Units and definitions</h2>
+      <ul>
+        <li>Fields ending in <code>_s</code> and <code>seconds</code> are seconds. <code>*_ts</code> and span ends are Unix epoch seconds.
+          <code>*_day</code> and buckets are local to the server's time zone.</li>
+        <li><b>Claude time</b> (<code>claude_s</code>) is the union of model-response and tool-run intervals in main threads, minus waits for a human;
+          a tool call a human had to approve counts for at most 10 minutes (the hub's <code>approval_cap_minutes</code>). <b>Agent time</b> (<code>agent_s</code>) is the same per subagent, summed,
+          so it can exceed wall time when agents run in parallel.</li>
+        <li><code>usd</code> and <code>cost</code> are estimates: tokens priced at API list rates, not what a subscription bills.</li>
+        <li>Token counts are as the API reported them; <code>thinking</code> is part of <code>output</code>.</li>
+      </ul>
+    </div>
+
+    <div class="card mb" id="api-cache">
+      <h2>Caching and errors</h2>
+      <ul>
+        <li>Stats answers carry an <code>ETag</code> that changes when new transcripts are parsed or the local day rolls over. Send it back as
+          <code>If-None-Match</code> to get an empty <code>304</code>. Repeated identical requests are served from memory.</li>
+        <li>Errors are JSON <code>{"error": "..."}</code>: 400 bad parameter, 404 unknown path or session, 503 when 16 requests are
+          already in flight or the database hasn't been built yet, 500 for a server bug. A 403 (address not allowed) has an empty body.</li>
+      </ul>
+    </div>
+
+    <div class="card mb" id="api-client">
+      <h2>Python client</h2>
+      <p><code>ccstats-query.py</code> is a single file, Python 3.8+ with no dependencies, that prints these answers as tables or JSON.
+        Downloaded from here, it already points at this server:</p>
+      <pre><span class="prompt">$ </span>curl -fsS <span class="base">http://spore:8420</span>/ccstats-query.py -o ~/.local/bin/ccstats-query &amp;&amp; chmod +x ~/.local/bin/ccstats-query</pre>
+      <p>On the hub, <code>ccstats script query</code> prints the same file. Usage:</p>
+      <pre><span class="prompt">$ </span>ccstats-query summary --days 7                      # one row per day
+<span class="prompt">$ </span>ccstats-query summary --days 28 --group week --by host
+<span class="prompt">$ </span>ccstats-query sessions --days 3 --sort cost --limit 10
+<span class="prompt">$ </span>ccstats-query session spore claude &lt;session-id&gt;     # agent tree
+<span class="prompt">$ </span>ccstats-query models --days 30 --project ccstats
+<span class="prompt">$ </span>ccstats-query tools --days 7 --top 10
+<span class="prompt">$ </span>ccstats-query hosts                                 # JSON
+<span class="prompt">$ </span>ccstats-query refresh
+<span class="prompt">$ </span>ccstats-query --json summary --group total --days 30 | jq '.rows[0].cost.total'
+<span class="prompt">$ </span>ccstats-query get /api/summary group=month by=model # any endpoint, raw JSON</pre>
+      <p>The server is the first of: <code>--server</code> / <code>-s</code>, <code>$CCSTATS_SERVER</code>,
+        <code>server = "..."</code> in <code>~/.config/ccstats/client.toml</code>, the server it was downloaded from, <code>localhost:8420</code>.
+        It can be <code>host</code>, <code>host:port</code> or a URL; a bare host means port 8420 over http, so give a full URL
+        (<code>https://stats.example.com</code>) for a server behind a reverse proxy.</p>
+      <pre><span class="prompt">$ </span>ccstats-query -s spore:8420 health
+<span class="prompt">$ </span>CCSTATS_SERVER=100.101.102.103 ccstats-query sessions
+<span class="prompt">$ </span>echo 'server = "spore:8420"' &gt; ~/.config/ccstats/client.toml</pre>
+      <p>It is also a module:</p>
+      <pre>import os, runpy
+Client = runpy.run_path(os.path.expanduser("~/.local/bin/ccstats-query"))["Client"]
+week = Client("spore:8420").get("/api/summary", days=7, group="total")["rows"][0]
+print(week["claude_s"] / 3600, week["cost"]["total"])</pre>
     </div>
   </section>
 
@@ -954,10 +1167,33 @@ async function renderSession(host, profile, id) {
   }
 }
 
+// ---- API tab: static reference, examples pointed at this server ------------------------
+
+async function renderApi() {
+  const origin = location.origin;
+  for (const b of document.querySelectorAll("#view-api .base")) b.textContent = origin;
+  for (const pre of document.querySelectorAll("#view-api pre.ex")) {
+    if (pre.childElementCount) continue;
+    const path = pre.dataset.path, post = pre.dataset.method === "POST";
+    const cmd = el("span", {}, el("span", { class: "prompt" }, "$ "), `curl -s ${post ? "-X POST " : ""}'${origin}${path}'`);
+    pre.append(cmd);
+    if (!post && !("noOpen" in pre.dataset)) pre.append(el("a", { href: path, target: "_blank", rel: "noopener" }, "open ↗"));
+  }
+  const health = await getHealth();
+  for (const t of document.querySelectorAll("#view-api .tz")) t.textContent = health.timezone;
+}
+$("api-toc").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-jump]");
+  if (!b) return;
+  const target = $(b.dataset.jump), bar = document.querySelector(".top");
+  const offset = getComputedStyle(bar).position === "sticky" ? bar.offsetHeight + 8 : 8;
+  window.scrollTo({ top: target.getBoundingClientRect().top + window.scrollY - offset, behavior: "smooth" });
+});
+
 // ---- Routing ---------------------------------------------------------------------------
 
-const TABS = { overview: renderOverview, cost: renderCost, tools: renderTools, agents: renderAgents, sessions: renderSessions, hosts: renderHosts };
-const TAB_TITLES = { overview: "Overview", cost: "Cost & tokens", tools: "Tools", agents: "Agents", sessions: "Sessions", hosts: "Hosts" };
+const TABS = { overview: renderOverview, cost: renderCost, tools: renderTools, agents: renderAgents, sessions: renderSessions, hosts: renderHosts, api: renderApi };
+const TAB_TITLES = { overview: "Overview", cost: "Cost & tokens", tools: "Tools", agents: "Agents", sessions: "Sessions", hosts: "Hosts", api: "API" };
 let lastView = null, fromTab = "sessions", seq = 0;
 
 async function route() {
@@ -970,7 +1206,7 @@ async function route() {
     if (a.dataset.tab === tab) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
   }
   // Filters scope the tabs, not a single session; the bucket only matters where there are charts over time.
-  $("filters").hidden = !!m;
+  $("filters").hidden = !!m || name === "api";
   $("group").hidden = !(name === "overview" || name === "cost");
   const key = m ? h : name;
   if (key !== lastView) {
@@ -1031,7 +1267,7 @@ $("refresh").addEventListener("click", async () => {
   await fetch("/api/refresh", { method: "POST" });
   setTimeout(reload, 2500);
 });
-// Keys: 1-6 switch tabs, / searches sessions, Esc leaves a session.
+// Keys: 1-7 switch tabs, / searches sessions, Esc leaves a session.
 document.addEventListener("keydown", (ev) => {
   if (ev.ctrlKey || ev.metaKey || ev.altKey || ev.target.closest?.("input, select, textarea")) return;
   const names = Object.keys(TABS);

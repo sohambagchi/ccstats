@@ -65,24 +65,30 @@ path = "/proj/<project>/ccstats/"
 
 ## API
 
+Full reference: the dashboard's API tab (`http://spore:8420/#api`), mirrored in
+[docs/analysis-artifacts/2026-11-10-0051-http-api-reference.md](docs/analysis-artifacts/2026-11-10-0051-http-api-reference.md).
 `GET /api` lists endpoints. Stats endpoints take `days=N` or `since`/`until` (local
 `YYYY-MM-DD`), and `host`, `profile`, `project`, `model`.
 
 ```sh
 curl 'http://spore:8420/api/summary?group=week&by=host'
-curl 'http://spore:8420/api/tools?days=7&top=10'
-curl 'http://spore:8420/api/sessions?days=1'
 curl 'http://spore:8420/api/sessions?days=30&sort=subagents&limit=5'
-curl 'http://spore:8420/api/models?days=30'                  # tokens and estimated $ per model
-curl 'http://spore:8420/api/session?host=spore&profile=claude&id=<session-id>'   # agent tree + timeline spans
+```
+
+From any machine, the Python client (stdlib only, preset to the hub it was fetched from):
+
+```sh
+curl -fsS http://spore:8420/ccstats-query.py -o ~/.local/bin/ccstats-query && chmod +x ~/.local/bin/ccstats-query
+ccstats-query summary --days 7
+ccstats-query -s other-hub:8420 sessions --sort cost
 ```
 
 Per-session and per-thread numbers are computed when a transcript changes, not per request; answers
 are cached until the next change.
 
-The dashboard has tabs (Overview, Cost & tokens, Tools, Agents, Sessions, Hosts) and keeps its filters in
+The dashboard has tabs (Overview, Cost & tokens, Tools, Agents, Sessions, Hosts, API) and keeps its filters in
 the URL, so `http://spore:8420/?days=7&host=yeast#sessions` is a shareable view. Click a session for its agent
-tree and timeline; keys `1`–`6` switch tabs, `/` searches sessions.
+tree and timeline; keys `1`–`7` switch tabs, `/` searches sessions.
 
 Dollar figures are estimates at API list prices (`src/ccstats/pricing.py`), not what a subscription bills.
 

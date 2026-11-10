@@ -9,7 +9,7 @@ json=$(ccstats -q report --days 30 --total --json 2>/dev/null) || { echo "pre-co
 printf '%s' "$json" | python3 -c '
 import json, re, sys, datetime
 t = json.load(sys.stdin)[0]
-h, m = divmod(round(t["claude_s"] / 60), 60)
+h, m = divmod(round((t["claude_s"] + t["agent_s"]) / 60), 60)  # main + subagent time
 out = t["tokens"]["main"]["output"] + t["tokens"]["sub"]["output"]
 cost, sess, sub, tools = t["cost"]["total"], t["sessions"], t["subagents"], t["tool_calls"]
 table = "\n".join([

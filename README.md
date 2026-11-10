@@ -16,7 +16,7 @@ per day and week, served as a dashboard and JSON API on the tailnet. Design and 
 ## Hub
 
 ```sh
-deploy/install-hub.sh            # builds, writes ~/.config/ccstats/config.toml, enables units
+deploy/install-hub.sh            # builds, links ~/.local/bin/ccstats, writes config.toml, enables units
 ccstats report --days 7 --tools  # terminal tables
 ccstats sessions --days 3
 ccstats check                    # token sums vs Claude Code's cost-state

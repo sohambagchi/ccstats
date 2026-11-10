@@ -19,6 +19,9 @@ mkdir -p "$state" "$unit_dir" "$(dirname "$conf")"
 echo "building $repo -> $root"
 "$nix" build "$repo#ccstats" -o "$root"
 store=$(readlink -f "$root")
+# Through the GC root, so upgrades retarget the command too.
+mkdir -p "$HOME/.local/bin"
+ln -sfn "$root/bin/ccstats" "$HOME/.local/bin/ccstats"
 
 if [[ ! -f $conf ]]; then
   cat >"$conf" <<EOF

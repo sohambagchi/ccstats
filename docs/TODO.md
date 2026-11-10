@@ -1,10 +1,9 @@
 # TODO
 
 ## Next
-- [ ] 1 Feature: install the hub on spore (`deploy/install-hub.sh`) #deploy — stages: edit, install — blocked: user go-ahead to open :8420
-- [ ] 2 Feature: register push hosts that run Claude Code (buckwheat, lacto, yeast, starling1–3?) #deploy — stages: install, verify — blocked: install the hub on spore
-- [ ] 3 Feature: CloudLab pull source in config.toml and `cloudlab-setup.sh` in the experiment profile #deploy — blocked: CloudLab project name
-- [ ] 4 Evaluate: Claude time against a stopwatch, incl. a 2-min AskUserQuestion wait #metrics — stages: measure
+- [ ] 1 Feature: register the remaining push hosts that run Claude Code (buckwheat, starling1–3?) #deploy — stages: install, verify
+- [ ] 2 Feature: CloudLab pull source in config.toml and `cloudlab-setup.sh` in the experiment profile #deploy — blocked: CloudLab project name
+- [ ] 3 Evaluate: Claude time against a stopwatch, incl. a 2-min AskUserQuestion wait #metrics — stages: measure
 
 ## Backlog
 - [ ] 1 Feature: push from Windows (gram) via WSL or a PowerShell variant #push

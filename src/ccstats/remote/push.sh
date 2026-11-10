@@ -97,7 +97,7 @@ do_run() {
   if [ "$code" = 202 ]; then
     info "asked $HUB_URL to refresh: queued"
   else
-    say "asking $HUB_URL to refresh: $code (the hub still picks the files up within 5 minutes)"
+    say "asking $HUB_URL to refresh: $code (the hub still picks the files up within the hour)"
   fi
   say "pushed $sent profile(s) in $(( $(date +%s) - start ))s"
 }

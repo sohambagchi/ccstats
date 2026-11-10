@@ -15,6 +15,7 @@ Console: https://claude.ai/artifact/SfziVxpWd83cbuxQEFcy1c
 
 ## Changes
 
+- [2026-11-09-2047-hourly-hub-schedule](changelog/2026-11-09-2047-hourly-hub-schedule.md) — hub collect, pulls and refresh run hourly
 - [2026-11-09-2043-readme-stats-hook](changelog/2026-11-09-2043-readme-stats-hook.md) — README stats table refreshed by a pre-commit hook
 - [2026-11-09-2050-subagents-in-session-project](changelog/2026-11-09-2050-subagents-in-session-project.md) — worktree agents folded into their session's project
 - [2026-11-09-2035-dashboard-tabs](changelog/2026-11-09-2035-dashboard-tabs.md) — tabbed dashboard, filters in the URL, hosts and collection status

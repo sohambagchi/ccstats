@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Install or upgrade the ccstats hub on this machine as systemd user units:
 #
-#   ccstats-serve.service   HTTP API + dashboard, refreshes the database every 5 min and on push
-#   ccstats-collect.timer   every 15 min: snapshot this machine's transcripts, run ssh pulls, compute
+#   ccstats-serve.service   HTTP API + dashboard, refreshes the database hourly and on push
+#   ccstats-collect.timer   hourly: snapshot this machine's transcripts, run ssh pulls, compute
 #
 # Builds the package from this checkout into a pinned GC root, so later builds and dev work don't
 # change what the units run. Re-run to upgrade. Writes ~/.config/ccstats/config.toml if missing.
@@ -77,10 +77,10 @@ EOF
 
 cat >"$unit_dir/ccstats-collect.timer" <<EOF
 [Unit]
-Description=ccstats collect every 15 minutes
+Description=ccstats collect hourly
 
 [Timer]
-OnCalendar=*:0/15
+OnCalendar=hourly
 Persistent=true
 
 [Install]

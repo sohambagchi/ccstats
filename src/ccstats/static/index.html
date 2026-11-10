@@ -1048,7 +1048,7 @@ window.addEventListener("resize", () => {
 window.addEventListener("hashchange", route);
 syncControls();
 loadDims().then(route, (e) => { $("status").replaceChildren(el("span", { class: "err" }, "Error: " + e.message)); });
-setInterval(reload, 5 * 60 * 1000);
+setInterval(reload, 60 * 60 * 1000);
 </script>
 </body>
 </html>

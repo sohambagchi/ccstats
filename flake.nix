@@ -5,7 +5,7 @@
 
   outputs = { self, nixpkgs }:
     let
-      version = "0.0.4";
+      version = "0.0.5";
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
       forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
     in
@@ -19,7 +19,8 @@
           build-system = [ pkgs.python3Packages.setuptools ];
           # zoneinfo needs a tz database; rsync/ssh/iproute2 are called by collect and serve.
           dependencies = [ pkgs.python3Packages.tzdata ];
-          makeWrapperArgs = [ "--prefix" "PATH" ":" (pkgs.lib.makeBinPath ([ pkgs.rsync pkgs.openssh ] ++ pkgs.lib.optional pkgs.stdenv.isLinux pkgs.iproute2)) ];
+          # Suffix: the system ssh/rsync win (they honour its ssh config and patches); these are fallbacks.
+          makeWrapperArgs = [ "--suffix" "PATH" ":" (pkgs.lib.makeBinPath ([ pkgs.rsync pkgs.openssh ] ++ pkgs.lib.optional pkgs.stdenv.isLinux pkgs.iproute2)) ];
           nativeCheckInputs = [ pkgs.python3Packages.pytestCheckHook ];
         };
         default = ccstats;
@@ -31,7 +32,7 @@
 
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {
-          packages = [ (pkgs.python3.withPackages (ps: [ ps.pytest ps.tzdata ])) pkgs.rsync pkgs.openssh pkgs.sqlite pkgs.shellcheck ];
+          packages = [ (pkgs.python3.withPackages (ps: [ ps.pytest ps.tzdata ])) pkgs.sqlite pkgs.shellcheck ];  # rsync and ssh come from the system, as in the package
           shellHook = ''export PYTHONPATH="$PWD/src''${PYTHONPATH:+:$PYTHONPATH}"'';
         };
       });

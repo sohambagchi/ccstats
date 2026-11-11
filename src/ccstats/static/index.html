@@ -55,7 +55,7 @@ h2 { font-size: 14px; font-weight: 600; margin: 0 0 2px; }
 .sub { color: var(--ink-2); font-size: 12px; }
 select, button, input { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--ring); border-radius: 6px; padding: 4px 8px; }
 input { width: 150px; }
-.filters select { max-width: 190px; text-overflow: ellipsis; }
+.filters select { max-width: 150px; text-overflow: ellipsis; }
 input[type="search"] { width: 260px; max-width: 100%; }
 button { cursor: pointer; }
 button.link { border: 0; background: none; color: var(--ink-2); padding: 4px 6px; }
@@ -77,6 +77,7 @@ a.tile .label::after { content: " →"; color: var(--muted); }
 .tile.hero { grid-column: span 2; }
 .tile.hero .value { font-size: 40px; line-height: 1.1; }
 .tile .note { color: var(--muted); font-size: 12px; }
+.quota h3 { font-size: 14px; margin: 0; } .quota .tiles { margin-bottom: 4px; }
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 12px; margin-bottom: 12px; }
 .mb { margin-bottom: 12px; }
 .card-h { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 6px 12px; margin-bottom: 4px; }
@@ -192,6 +193,7 @@ td.tree .t { color: var(--muted); }
       <span class="sep"></span>
       <select id="host" aria-label="Host"><option value="">All hosts</option></select>
       <select id="profile" aria-label="Profile"><option value="">All profiles</option></select>
+      <select id="account" aria-label="Account" title="Subscription"><option value="">All accounts</option></select>
       <input id="project" list="project-list" placeholder="All projects" aria-label="Project" autocomplete="off" spellcheck="false">
       <datalist id="project-list"></datalist>
       <select id="model" aria-label="Model"><option value="">All models</option></select>
@@ -204,6 +206,11 @@ td.tree .t { color: var(--muted); }
   <!-- Overview: headline numbers, activity over time, entry points into the other tabs -->
   <section class="view" id="view-overview">
     <div class="tiles" id="o-tiles"></div>
+    <div class="card mb" id="o-quota-card" hidden>
+      <div class="card-h"><div><h2>Weekly quota</h2><div class="sub" id="o-quota-sub"></div></div></div>
+      <div class="legend"><span><i style="background:var(--s1)"></i>Full window</span><span><i style="background:var(--s1);opacity:.4"></i>Current or partly covered window</span><span><i style="background:var(--ink-2);height:2px"></i>Estimated quota</span></div>
+      <div class="grid2 quota" id="o-quota"></div>
+    </div>
     <div class="card mb">
       <div class="card-h">
         <div><h2 id="o-chart-title"></h2><div class="sub" id="o-chart-sub"></div></div>
@@ -681,9 +688,9 @@ function empty(text) { return el("div", { class: "empty" }, text); }
 
 // ---- State: filters live in the query string, the tab in the hash ----------------------
 
-const DEFAULTS = { days: "30", group: "day", host: "", profile: "", project: "", model: "" };
+const DEFAULTS = { days: "30", group: "day", host: "", profile: "", account: "", project: "", model: "" };
 const F = { ...DEFAULTS };
-const DIMS = ["host", "profile", "project", "model"];
+const DIMS = ["host", "profile", "account", "project", "model"];
 const pref = {
   get(k, d) { try { return localStorage.getItem("ccstats." + k) || d; } catch { return d; } },
   set(k, v) { try { localStorage.setItem("ccstats." + k, v); } catch { /* private mode */ } },
@@ -852,6 +859,66 @@ function hbars(container, items, label, value, fmt, extra, opt = {}) {
     tipOn(row, label(it), [[opt.unit || "Calls", opt.exact ? opt.exact(it) : fmt(value(it)), "var(--s1)"], ...(extra ? extra(it) : [])]);
     container.append(row);
   }
+}
+
+// Share of the weekly quota per window: one column per window, a line at 100%.
+const FRAC_STEPS = [0.05, 0.1, 0.2, 0.25, 0.5, 1, 2];
+function quotaColumns(container, windows, H = 170) {
+  container.replaceChildren();
+  const W = Math.max(container.clientWidth, 260), L = 40, B = 22, T = 8;
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, height: H, role: "img" });
+  // A window that ended at the limit lands a hair over 100%; keep the scale at 100% for it.
+  const peak = Math.max(1, ...windows.map((w) => w.fraction || 0));
+  const { step, top: max } = niceScale(peak <= 1.05 ? 1 : peak, FRAC_STEPS);
+  const y = (v) => H - B - (v / max) * (H - B - T);
+  for (let i = 0; Math.round(i * step * 1e6) <= Math.round(max * 1e6); i++) {
+    const v = step * i, yy = y(v);
+    svg.append(svgEl("line", { x1: L, x2: W, y1: yy, y2: yy, stroke: i ? "var(--grid)" : "var(--axis)", "stroke-width": 1 }));
+    const t = svgEl("text", { x: L - 6, y: yy + 4, "text-anchor": "end" }); t.textContent = Math.round(v * 100) + "%"; svg.append(t);
+  }
+  const slot = (W - L) / Math.max(1, windows.length), bw = Math.max(2, Math.min(28, slot * 0.7));
+  const labelEvery = Math.ceil(windows.length / Math.max(1, Math.floor((W - L) / 56)));
+  const day = (ts) => new Date(ts * 1000).toLocaleDateString([], { month: "short", day: "numeric" });
+  windows.forEach((w, i) => {
+    const cx = L + slot * i + slot / 2, g = svgEl("g", { class: "bar", tabindex: 0 });
+    const yt = y(Math.min(w.fraction || 0, max)), h = H - B - yt, r = Math.min(4, h, bw / 2), x0 = cx - bw / 2, yb = H - B;
+    if (h > 0) {
+      g.append(svgEl("path", { d: `M${x0},${yb} V${yt + r} Q${x0},${yt} ${x0 + r},${yt} H${x0 + bw - r} Q${x0 + bw},${yt} ${x0 + bw},${yt + r} V${yb} Z`,
+                                fill: "var(--s1)", "fill-opacity": w.partial ? 0.4 : 1 }));
+    }
+    g.append(svgEl("rect", { x: L + slot * i, y: T, width: slot, height: H - B - T, fill: "transparent" }));
+    tipOn(g, `${day(w.start)} – ${day(w.end)}${w.partial ? " (partial)" : ""}`, [
+      ["Of quota", fmtPct(w.fraction), "var(--s1)"], ["Est. cost", fmtUsd(w.usd), null],
+      ["Output tokens", fmtNum(w.output), null], ["All tokens", fmtNum(w.tokens), null]]);
+    svg.append(g);
+    if (i % labelEvery === 0) {
+      const t = svgEl("text", { x: cx, y: H - 6, "text-anchor": "middle" }); t.textContent = day(w.start); svg.append(t);
+    }
+  });
+  // The quota line sits above the columns so a window at the limit still shows it.
+  svg.append(svgEl("line", { x1: L, x2: W, y1: y(1), y2: y(1), stroke: "var(--ink-2)", "stroke-width": 2, "stroke-dasharray": "5 4" }));
+  container.append(svg);
+}
+
+function renderQuota(rows) {
+  const shown = rows.filter((a) => a.weekly_quota_usd);
+  $("o-quota-card").hidden = !shown.length;
+  if (!shown.length) return;
+  $("o-quota-sub").textContent = "Estimated cost per weekly-limit window over the configured quota (list-price dollars); all time, not affected by filters";
+  $("o-quota").replaceChildren(...shown.map((a) => {
+    const cur = a.current, chart = el("div");
+    const left = cur && a.weekly_reset ? `resets in ${fmtDur(cur.end - Date.now() / 1000)}` : "last 7 days";
+    const box = el("div", {},
+      el("div", { class: "card-h" }, el("div", {}, el("h3", {}, a.account),
+        el("div", { class: "sub" }, `${a.weekly_reset ? "Resets " + a.weekly_reset : "Reset time unknown: 7-day windows back from now"} · quota ≈ ${fmtUsd(a.weekly_quota_usd)}`))),
+      el("div", { class: "tiles" },
+        tile("This window", fmtPct(cur ? cur.fraction : 0), `${fmtUsd(cur ? cur.usd : 0)} · ${left}`),
+        tile("Last 4 full windows", fmtPct(a.mean_fraction_last4), "mean share of quota"),
+        tile("All full windows", fmtPct(a.mean_fraction), `mean over ${a.full_windows}`)),
+      chart);
+    requestAnimationFrame(() => quotaColumns(chart, a.windows));
+    return box;
+  }));
 }
 
 // Weekday x hour grid, shaded by magnitude toward the surface (one hue, so it reads in both themes).
@@ -1032,10 +1099,11 @@ const METRICS = {
 };
 
 async function renderOverview() {
-  const [series, total, sessions, byHost, health] = await Promise.all([
+  const [series, total, sessions, byHost, health, quota] = await Promise.all([
     api("/api/summary", { group: F.group }), api("/api/summary", { group: "total" }), api("/api/sessions", { limit: 8 }),
-    api("/api/summary", { group: "total", by: "host" }), getHealth(),
+    api("/api/summary", { group: "total", by: "host" }), getHealth(), api("/api/quota", {}, true),
   ]);
+  renderQuota(quota);
   const t = totalOf(total), tm = t.tokens.main, ts = t.tokens.sub;
   $("o-tiles").replaceChildren(
     tile("Claude time", fmtDur(t.claude_s), `${fmtDur(t.api_s)} model in flight · ${fmtDur(t.agent_s)} in subagents`, { hero: true }),
@@ -1545,7 +1613,7 @@ async function status() {
 
 async function loadDims() {
   const d = await api("/api/dimensions", {}, true);
-  for (const k of ["host", "profile", "model"]) {
+  for (const k of ["host", "profile", "account", "model"]) {
     const sel = $(k);
     sel.replaceChildren(sel.options[0]);
     for (const v of d[k]) sel.append(el("option", { value: v }, v));
@@ -1566,7 +1634,7 @@ seg("sort", (v) => { view.sort = v; view.limit = 200; syncControls(); route(); }
 seg("u-metric", (v) => { view.turnMetric = v; pref.set("turnMetric", v); syncControls(); route(); });
 seg("u-sort", (v) => { view.turnSort = v; syncControls(); route(); });
 seg("u-origin", (v) => { view.turnOrigin = v; syncControls(); route(); });
-for (const k of ["host", "profile", "model"]) $(k).addEventListener("change", () => setFilter(k, $(k).value));
+for (const k of ["host", "profile", "account", "model"]) $(k).addEventListener("change", () => setFilter(k, $(k).value));
 $("project").addEventListener("change", () => setFilter("project", $("project").value.trim()));
 $("project").addEventListener("keydown", (ev) => { if (ev.key === "Escape") { $("project").value = ""; setFilter("project", ""); } });
 $("clear").addEventListener("click", () => { for (const k of DIMS) F[k] = ""; writeURL(); syncControls(); route(); });

@@ -21,6 +21,7 @@ Console: https://claude.ai/artifact/SfziVxpWd83cbuxQEFcy1c
 
 ## Changes
 
+- [2026-11-11-1104-quota-on-dashboard](changelog/2026-11-11-1104-quota-on-dashboard.md) — Weekly quota card on Overview; Account filter
 - [2026-11-11-1102-accounts-and-quota-api](changelog/2026-11-11-1102-accounts-and-quota-api.md) — `account` dimension and `/api/quota`
 - [2026-11-10-2240-turns-tab](changelog/2026-11-10-2240-turns-tab.md) — Turns tab: who starts the work, when, longest turns, timer check; cost by effort and skill
 - [2026-11-10-2227-turns-in-data-and-api](changelog/2026-11-10-2227-turns-in-data-and-api.md) — turns with origins, effort and skill; turns, heatmap, timecheck and cost endpoints

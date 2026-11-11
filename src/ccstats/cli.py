@@ -108,6 +108,12 @@ def cmd_check(args, cfg):
         print(f"{'OVER ' + ','.join(flags) if flags else ('exact' if exact else 'ok   ')}  {r['session']}  {r['model']}  "
               + "  ".join(f"{k}={r[k][0]}/{r[k][1]}" for k in ("output", "cache_read", "cache_write")))
     print(f"{bad} session/model rows where transcript sums exceed Claude Code's cost-state")
+    t = metrics.timecheck(conn, metrics.Filter())
+    if t["timed"]:
+        print(f"\nClaude time vs Claude Code's turn timer, {t['timed']} of {t['turns']} turns timed: "
+              f"{_dur(t['claude_s'])} vs {_dur(t['timer_s'])}; per turn p10 {t['ratio_p10']:.2f}, "
+              f"median {t['ratio_median']:.2f}, p90 {t['ratio_p90']:.2f}; {t['within_10pct']} within 10%, "
+              f"{t['over_10pct']} over by more than 10% (the timer also counts waits for a human)")
     sys.exit(1 if bad else 0)
 
 
@@ -164,13 +170,14 @@ def main(argv=None):
     g.add_argument("--week", dest="group", action="store_const", const="week")
     g.add_argument("--month", dest="group", action="store_const", const="month")
     g.add_argument("--total", dest="group", action="store_const", const="total")
-    r.add_argument("--by", choices=[*metrics.DIMENSIONS, "model"])
+    r.add_argument("--by", choices=metrics.SPLITS)
     r.add_argument("--tools", type=int, nargs="?", const=15, default=0, help="also list the top N tools")
     r.set_defaults(group="day")
     s = sub.add_parser("sessions", help="recent sessions")
     filters(s)
     s.add_argument("--limit", type=int, default=30)
-    sub.add_parser("check", help="compare token sums with Claude Code's cost-state per session")
+    sub.add_parser("check", help="compare token sums with Claude Code's cost-state per session, and Claude time "
+                                 "with its turn timer")
     sv = sub.add_parser("serve", help="run the HTTP API and dashboard")
     sv.add_argument("--listen", help="address:port (default from config, 0.0.0.0:8420)")
     h = sub.add_parser("host", help="manage push hosts (restricted ssh keys)")

@@ -9,6 +9,7 @@ import json
 import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 
 GROUPS = ("day", "week", "month", "total")
 DIMENSIONS = ("host", "profile", "project")
@@ -55,22 +56,38 @@ def _dim(by: str | None, alias: str = "th") -> str:
     return f"{alias}.{by}"
 
 
+def _split(by: str | None, alias: str, turn: str | None = None) -> tuple[str, str]:
+    """Column expression and extra join that split rows of `alias` by `by`.
+
+    `turn` is the SQL for the main-thread turn a row belongs to; `by=origin` looks
+    that turn up to say who started it.
+    """
+    if by == "model":
+        return f"{alias}.model", ""
+    if by == "origin":
+        return "COALESCE(tu.origin, 'unknown')", f"LEFT JOIN u_turns tu ON tu.uuid = {turn}"
+    return _dim(by), ""
+
+
+SPLITS = (*DIMENSIONS, "model", "origin")
+
+
 def summary(conn: sqlite3.Connection, f: Filter, group: str = "day", by: str | None = None) -> list[dict]:
     """One row per (bucket, dimension value) with sessions, tokens, tools and time."""
     if group not in GROUPS:
         raise ValueError(f"group must be one of {GROUPS}")
-    if by is not None and by not in (*DIMENSIONS, "model"):
-        raise ValueError(f"by must be one of {DIMENSIONS + ('model',)}")
+    if by is not None and by not in SPLITS:
+        raise ValueError(f"by must be one of {SPLITS}")
     rows: dict[tuple, dict] = defaultdict(_empty)
 
     # Tokens, main and subagent threads separately.
-    dim = "m.model" if by == "model" else _dim(by)
+    dim, join = _split(by, "m", "COALESCE(m.turn, th.root_turn)")
     w, a = f.where("m", model_col="model")
     for r in conn.execute(f"""
         SELECT {_bucket(group, 'm')} AS b, {dim} AS d, th.is_subagent AS sub, COUNT(*) AS n,
                SUM(input) AS input, SUM(output) AS output, SUM(thinking) AS thinking,
                SUM(cache_read) AS cache_read, SUM(cache_write) AS cache_write, SUM(usd) AS usd
-        FROM u_messages m JOIN threads th ON th.path = m.path WHERE {w} GROUP BY b, d, sub""", a):
+        FROM u_messages m JOIN threads th ON th.path = m.path {join} WHERE {w} GROUP BY b, d, sub""", a):
         row = rows[(r["b"], r["d"])]
         side = "sub" if r["sub"] else "main"
         row[f"api_calls_{side}"] += r["n"]
@@ -79,12 +96,12 @@ def summary(conn: sqlite3.Connection, f: Filter, group: str = "day", by: str | N
             row["tokens"][side][k] += r[k] or 0
 
     # Tool calls.
-    dim = "t.model" if by == "model" else _dim(by)
+    dim, join = _split(by, "t", "COALESCE(t.turn, th.root_turn)")
     w, a = f.where("t", model_col="model")
     for r in conn.execute(f"""
         SELECT {_bucket(group, 't')} AS b, {dim} AS d, COUNT(*) AS n, SUM(is_error) AS err,
                SUM(is_background) AS bg, SUM(th.is_subagent) AS sub
-        FROM u_tools t JOIN threads th ON th.path = t.path WHERE {w} GROUP BY b, d""", a):
+        FROM u_tools t JOIN threads th ON th.path = t.path {join} WHERE {w} GROUP BY b, d""", a):
         row = rows[(r["b"], r["d"])]
         row["tool_calls"] += r["n"]
         row["tool_errors"] += r["err"] or 0
@@ -92,20 +109,22 @@ def summary(conn: sqlite3.Connection, f: Filter, group: str = "day", by: str | N
         row["tool_calls_sub"] += r["sub"] or 0
 
     if by != "model":
-        dim = _dim(by)
-        # Human prompts.
+        # Turns, and the human prompts among them.
+        dim = "p.origin" if by == "origin" else _dim(by)
         w, a = f.where("p")
         for r in conn.execute(f"""
-            SELECT {_bucket(group, 'p')} AS b, {dim} AS d, COUNT(*) AS n
-            FROM u_prompts p JOIN threads th ON th.path = p.path WHERE {w} GROUP BY b, d""", a):
-            rows[(r["b"], r["d"])]["prompts"] += r["n"]
+            SELECT {_bucket(group, 'p')} AS b, {dim} AS d, COUNT(*) AS n, SUM(p.origin = 'human') AS human
+            FROM u_turns p JOIN threads th ON th.path = p.path WHERE {w} GROUP BY b, d""", a):
+            rows[(r["b"], r["d"])]["turns"] += r["n"]
+            rows[(r["b"], r["d"])]["prompts"] += r["human"] or 0
 
         # Claude time (main threads) and agent time (subagents, summed in parallel).
+        dim, join = _split(by, "u", "CASE WHEN th.is_subagent = 1 THEN th.root_turn ELSE u.turn END")
         w, a = f.where("u")
         for r in conn.execute(f"""
             SELECT {_bucket(group, 'u')} AS b, {dim} AS d, th.is_subagent AS sub,
-                   SUM(claude_s) AS c, SUM(api_s) AS api
-            FROM u_busy u JOIN threads th ON th.path = u.path WHERE {w} GROUP BY b, d, sub""", a):
+                   SUM(u.claude_s) AS c, SUM(u.api_s) AS api
+            FROM u_busy u JOIN threads th ON th.path = u.path {join} WHERE {w} GROUP BY b, d, sub""", a):
             row = rows[(r["b"], r["d"])]
             if r["sub"]:
                 row["agent_s"] += r["c"] or 0
@@ -114,11 +133,16 @@ def summary(conn: sqlite3.Connection, f: Filter, group: str = "day", by: str | N
                 row["claude_s"] += r["c"] or 0
                 row["api_s"] += r["api"] or 0
 
-        # Sessions active in the bucket: main threads with any message or prompt there.
+        # Sessions active in the bucket: main threads with any message or turn there
+        # (by origin: sessions with a turn of that origin).
+        if by == "origin":
+            dim, src = "x.origin", "SELECT path, day, week, origin FROM u_turns"
+        else:
+            dim, src = _dim(by), "SELECT path, day, week FROM u_messages UNION SELECT path, day, week FROM u_turns"
         w, a = f.where("x")
         for r in conn.execute(f"""
             SELECT {_bucket(group, 'x')} AS b, {dim} AS d, COUNT(DISTINCT th.path) AS n
-            FROM (SELECT path, day, week FROM u_messages UNION SELECT path, day, week FROM u_prompts) x
+            FROM ({src}) x
             JOIN threads th ON th.path = x.path WHERE th.is_subagent = 0 AND {w} GROUP BY b, d""", a):
             rows[(r["b"], r["d"])]["sessions"] += r["n"]
 
@@ -141,7 +165,7 @@ def summary(conn: sqlite3.Connection, f: Filter, group: str = "day", by: str | N
 
 def _empty() -> dict:
     tok = lambda: {"input": 0, "output": 0, "thinking": 0, "cache_read": 0, "cache_write": 0}  # noqa: E731
-    return {"sessions": 0, "prompts": 0, "subagents": 0, "sessions_with_subagents": 0, "agent_types": {},
+    return {"sessions": 0, "prompts": 0, "turns": 0, "subagents": 0, "sessions_with_subagents": 0, "agent_types": {},
             "max_spawn_depth": 0, "mean_spawn_depth": 0.0, "peak_concurrent_subagents": 0,
             "api_calls_main": 0, "api_calls_sub": 0, "tokens": {"main": tok(), "sub": tok()},
             "cost": {"main": 0.0, "sub": 0.0, "total": 0.0},  # estimated $ at API list prices (pricing.py)
@@ -153,7 +177,9 @@ def _add_teams(conn, f: Filter, group: str, by: str | None, rows):
     """Subagent counts, types, depth and peak concurrency, bucketed by spawn day."""
     from .parse import iso_week, local_day  # local import keeps metrics free of tz state
     tz = _tz(conn)
-    subs = conn.execute("SELECT * FROM threads WHERE is_subagent = 1 AND first_ts IS NOT NULL").fetchall()
+    subs = conn.execute("""SELECT th.*, COALESCE(tu.origin, 'unknown') AS origin FROM threads th
+                           LEFT JOIN u_turns tu ON tu.uuid = th.root_turn
+                           WHERE th.is_subagent = 1 AND th.first_ts IS NOT NULL""").fetchall()
     per_bucket: dict[tuple, list] = defaultdict(list)
     for s in subs:
         day = local_day(s["first_ts"], tz)
@@ -211,18 +237,117 @@ def tools(conn: sqlite3.Connection, f: Filter, top: int = 25) -> dict:
     return {"by_name": by_name, "bash": bash}
 
 
-def models(conn: sqlite3.Connection, f: Filter) -> list[dict]:
-    """Per-model totals; `usd` is the estimate, `priced` False when pricing.py has no rate for the model."""
+COST_SPLITS = ("model", "effort", "skill", "origin")
+
+
+def cost(conn: sqlite3.Connection, f: Filter, by: str = "model") -> list[dict]:
+    """Tokens and estimated cost per model, effort level, skill or turn origin, most expensive first.
+
+    `effort` and `skill` are null for responses that recorded none (older Claude Code,
+    or no skill in effect); with `by=model`, `priced` is False when pricing.py has no
+    rate for the model.
+    """
+    if by not in COST_SPLITS:
+        raise ValueError(f"by must be one of {COST_SPLITS}")
     from .pricing import known
+    dim, join = ("m." + by, "") if by != "origin" else _split("origin", "m", "COALESCE(m.turn, th.root_turn)")
     w, a = f.where("m", model_col="model")
     rows = [dict(r) for r in conn.execute(f"""
-        SELECT m.model, COUNT(*) AS api_calls, SUM(input) AS input, SUM(output) AS output, SUM(thinking) AS thinking,
-               SUM(cache_read) AS cache_read, SUM(cache_write) AS cache_write, SUM(usd) AS usd
-        FROM u_messages m JOIN threads th ON th.path = m.path WHERE {w}
-        GROUP BY m.model ORDER BY usd DESC, output DESC""", a)]
-    for r in rows:
-        r["priced"] = known(r["model"])
+        SELECT {dim} AS {by}, COUNT(*) AS api_calls, SUM(input) AS input, SUM(output) AS output, SUM(thinking) AS thinking,
+               SUM(cache_read) AS cache_read, SUM(cache_write) AS cache_write, SUM(usd) AS usd,
+               SUM(th.is_subagent) AS api_calls_sub
+        FROM u_messages m JOIN threads th ON th.path = m.path {join} WHERE {w}
+        GROUP BY 1 ORDER BY usd DESC, output DESC""", a)]
+    if by == "model":
+        for r in rows:
+            r["priced"] = known(r["model"])
     return rows
+
+
+def models(conn: sqlite3.Connection, f: Filter) -> list[dict]:
+    """Per-model totals (`cost` by model)."""
+    return cost(conn, f, "model")
+
+
+def _turn_where(f: Filter) -> tuple[str, list]:
+    """Filter for turn_stats `x` joined to its main thread `th` (model does not apply)."""
+    return Filter(f.since, f.until, f.host, f.profile, f.project).where("x")
+
+
+TURN_SORTS = {"claude": "x.claude_s DESC", "agent": "x.agent_s DESC", "cost": "x.usd DESC", "recent": "x.ts DESC",
+              "timer": "x.cc_turn_s DESC"}
+
+
+def turns(conn: sqlite3.Connection, f: Filter, limit: int = 50, sort: str = "claude", origin: str | None = None) -> list[dict]:
+    """Main-thread turns started in the range, each with the subagents, tool calls and cost it led to."""
+    if sort not in TURN_SORTS:
+        raise ValueError(f"sort must be one of {tuple(TURN_SORTS)}")
+    w, a = _turn_where(f)
+    if origin == "autonomous":
+        w += " AND x.origin != 'human'"
+    elif origin:
+        w += " AND x.origin = ?"
+        a.append(origin)
+    return [dict(r) for r in conn.execute(f"""
+        SELECT x.uuid, x.host, x.profile, x.session_id, th.project, COALESCE(s.title, th.title) AS title, x.ts, x.day,
+               x.origin, x.claude_s, x.api_s, x.agent_s, x.cc_turn_s, x.subagents, x.tool_calls, x.usd
+        FROM turn_stats x JOIN threads th ON th.path = x.path
+        LEFT JOIN sessions s ON s.host = x.host AND s.profile = x.profile AND s.session_id = x.session_id
+        WHERE {w} ORDER BY {TURN_SORTS[sort]} LIMIT ?""", [*a, limit])]
+
+
+def heatmap(conn: sqlite3.Connection, f: Filter) -> dict:
+    """Claude time and agent time by local weekday (0 = Monday) and hour, plus turns started in each cell."""
+    tz = _tz(conn)
+    cells: dict[tuple[int, int], dict] = {}
+
+    def cell(wd, h):
+        return cells.setdefault((wd, h), {"weekday": wd, "hour": h, "claude_s": 0.0, "agent_s": 0.0, "turns": 0, "prompts": 0})
+    w, a = f.where("u")
+    for r in conn.execute(f"""
+        SELECT (CAST(strftime('%w', u.day) AS INT) + 6) % 7 AS wd, u.hour AS h, th.is_subagent AS sub, SUM(claude_s) AS c
+        FROM u_busy u JOIN threads th ON th.path = u.path WHERE {w} GROUP BY wd, h, sub""", a):
+        cell(r["wd"], r["h"])["agent_s" if r["sub"] else "claude_s"] += r["c"] or 0.0
+    w, a = f.where("p")
+    for r in conn.execute(f"SELECT p.ts, p.origin FROM u_turns p JOIN threads th ON th.path = p.path WHERE {w}", a):
+        dt = datetime.fromtimestamp(r["ts"], tz)
+        c = cell(dt.weekday(), dt.hour)
+        c["turns"] += 1
+        c["prompts"] += r["origin"] == "human"
+    days = [0] * 7  # how many of each weekday the range covers, for averages
+    lo, hi = f.since, f.until
+    if lo is None or hi is None:
+        r = conn.execute("SELECT MIN(day), MAX(day) FROM u_busy").fetchone()
+        lo, hi = lo or r[0], hi or r[1]
+    if lo and hi:
+        d, end = date.fromisoformat(lo), min(date.fromisoformat(hi), datetime.now(tz).date())
+        while d <= end:
+            days[d.weekday()] += 1
+            d += timedelta(days=1)
+    return {"cells": sorted(cells.values(), key=lambda c: (c["weekday"], c["hour"])), "weekday_counts": days}
+
+
+def timecheck(conn: sqlite3.Connection, f: Filter) -> dict:
+    """Claude time per turn next to Claude Code's own turn timer (`system/turn_duration`).
+
+    The timer runs from the prompt to control returning and includes waits for a
+    human, which Claude time leaves out, so Claude time should be at or below it.
+    """
+    w, a = _turn_where(f)
+    rows = conn.execute(f"""SELECT x.claude_s, x.cc_turn_s, x.origin FROM turn_stats x JOIN threads th ON th.path = x.path
+                            WHERE {w}""", a).fetchall()
+    timed = [r for r in rows if r["cc_turn_s"]]
+    ratios = sorted(r["claude_s"] / r["cc_turn_s"] for r in timed)
+
+    def pct(q):
+        return round(ratios[min(len(ratios) - 1, int(q * len(ratios)))], 3) if ratios else None
+    return {
+        "turns": len(rows), "timed": len(timed),
+        "claude_s": round(sum(r["claude_s"] for r in timed), 1), "timer_s": round(sum(r["cc_turn_s"] for r in timed), 1),
+        "ratio_p10": pct(0.1), "ratio_median": pct(0.5), "ratio_p90": pct(0.9),
+        "within_10pct": sum(abs(x - 1) <= 0.1 for x in ratios), "over_10pct": sum(x > 1.1 for x in ratios),
+        "points": [[round(r["cc_turn_s"], 1), round(r["claude_s"], 1), r["origin"]] for r in timed],
+    }
 
 
 SESSION_SORTS = {"recent": "last_ts DESC", "subagents": "subagents DESC, last_ts DESC",
@@ -259,7 +384,7 @@ def sessions(conn: sqlite3.Connection, f: Filter, limit: int = 100, sort: str = 
 
 def session_detail(conn: sqlite3.Connection, host: str, profile: str, session_id: str) -> dict | None:
     """One session: its rollup, every thread (main + subagents) as a tree with stats and activity spans,
-    and the main thread's prompts, for the hierarchy and timeline views."""
+    and the main thread's turns (and the human prompts among them), for the hierarchy and timeline views."""
     row = conn.execute("SELECT * FROM sessions WHERE host = ? AND profile = ? AND session_id = ?",
                        (host, profile, session_id)).fetchone()
     if row is None:
@@ -280,8 +405,11 @@ def session_detail(conn: sqlite3.Connection, host: str, profile: str, session_id
         d["spans"] = json.loads(t["spans"] or "[]")
         out.append(d)
     out.sort(key=lambda d: (d["is_subagent"], d["first_ts"] or 0))
-    prompts = [dict(r) for r in conn.execute("SELECT ts, claude_s FROM u_prompts WHERE path = ? ORDER BY ts", (row["path"],))]
-    return {"session": _session_out(row), "threads": out, "prompts": prompts}
+    turns = [dict(r) for r in conn.execute("""
+        SELECT uuid, ts, origin, claude_s, api_s, agent_s, cc_turn_s, subagents, tool_calls, usd
+        FROM turn_stats WHERE host = ? AND profile = ? AND session_id = ? ORDER BY ts""", (host, profile, session_id))]
+    prompts = [{"ts": t["ts"], "claude_s": t["claude_s"]} for t in turns if t["origin"] == "human"]
+    return {"session": _session_out(row), "threads": out, "turns": turns, "prompts": prompts}
 
 
 def dimensions(conn: sqlite3.Connection) -> dict:

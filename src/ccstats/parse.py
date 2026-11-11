@@ -16,13 +16,16 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 # Bump when parse output changes, so cached files are parsed again.
-PARSER_VERSION = 2
+PARSER_VERSION = 3
 
 # Idle gaps shorter than this inside a thread's activity spans are bridged.
 SPAN_BRIDGE_S = 2.0
 
 # Tools whose tool_use -> tool_result interval is the human deciding, not Claude working.
 DECISION_TOOLS = frozenset({"AskUserQuestion", "ExitPlanMode"})
+
+# Who can start a turn, as Claude Code's `origin.kind` (or `turnOrigin`) names them; "human" is a typed prompt.
+TURN_ORIGINS = ("human", "task-notification", "peer", "scheduled", "auto-continuation", "coordinator")
 
 # Permission modes in which a tool call may sit waiting for a human approval.
 PROMPTING_MODES = frozenset({"default", "acceptEdits", "plan"})
@@ -50,7 +53,7 @@ class Parsed:
     thread: dict
     messages: list[dict] = field(default_factory=list)
     tools: list[dict] = field(default_factory=list)
-    prompts: list[dict] = field(default_factory=list)
+    turns: list[dict] = field(default_factory=list)
     busy: list[dict] = field(default_factory=list)
 
 
@@ -81,6 +84,18 @@ def split_by_day(start: float, end: float, tz: ZoneInfo):
         piece_end = min(end, nxt)
         yield d.isoformat(), piece_end - start
         start = piece_end
+
+
+def split_by_hour(start: float, end: float, tz: ZoneInfo):
+    """Yield (day, hour, seconds) pieces of [start, end) cut at local hour marks (so also at midnights)."""
+    while start < end:
+        dt = datetime.fromtimestamp(start, tz)
+        off = dt.utcoffset().total_seconds()
+        nxt = min(end, ((start + off) // 3600 + 1) * 3600 - off)
+        if nxt <= start:  # never stall on an odd offset
+            nxt = min(end, start + 3600)
+        yield dt.date().isoformat(), dt.hour, nxt - start
+        start = nxt
 
 
 def union(intervals):
@@ -150,20 +165,28 @@ def thread_identity(rel: str) -> dict:
     return {"host": host, "profile": profile, "slug": slug, "session_id": session_id, "agent_id": agent_id}
 
 
-def _is_human_prompt(r: dict) -> bool:
+def turn_origin(r: dict) -> str | None:
+    """Who started the turn a user record opens (one of TURN_ORIGINS), or None if it opens no turn."""
+    kind = (r.get("origin") or {}).get("kind") or r.get("turnOrigin")
+    if kind:
+        kind = kind.replace("_", "-")
+        return kind if kind in TURN_ORIGINS else "other"
     if "origin" in r:
-        return (r.get("origin") or {}).get("kind") == "human"
+        return None
     # Transcripts from before `origin` existed: a typed prompt is a plain-text user record.
     if r.get("isMeta") or r.get("isSidechain") or r.get("toolUseResult") is not None:
-        return False
+        return None
     content = (r.get("message") or {}).get("content")
     if isinstance(content, list):
         if any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
-            return False
+            return None
         content = " ".join(b.get("text", "") for b in content if isinstance(b, dict))
     if not isinstance(content, str) or not content.strip():
-        return False
-    return not content.lstrip().startswith(("<local-command", "<command-", "<task-notification", "<bash-", "Caveat:"))
+        return None
+    content = content.lstrip()
+    if content.startswith("<task-notification"):
+        return "task-notification"
+    return None if content.startswith(("<local-command", "<command-", "<bash-", "Caveat:")) else "human"
 
 
 def _read_meta(path: str) -> dict:
@@ -184,7 +207,9 @@ def parse_file(path: str, rel: str, settings: ParseSettings) -> Parsed:
     msgs: dict[str, dict] = {}           # message.id -> aggregated message
     tool_uses: dict[str, dict] = {}      # tool_use id -> call
     results: dict[str, dict] = {}        # tool_use id -> result
-    prompts: list[dict] = []
+    turns: list[dict] = []               # turn starts in a main thread, in file order
+    timers: list[tuple[float, float]] = []  # Claude Code's own turn timer: (turn end, seconds)
+    turn: str | None = None              # the turn the records being read belong to
     info = {"cwd": None, "version": None, "branch": None, "entrypoint": None, "title": None,
             "ai_title": None, "account": None, "cost": None, "compactions": 0}
     prev_ts: float | None = None
@@ -222,14 +247,17 @@ def parse_file(path: str, rel: str, settings: ParseSettings) -> Parsed:
                         start = api_req.get(r.get("requestRef") or "")
                         msg = msgs[mid] = {"id": mid, "first": ts, "last": ts, "model": m.get("model") or "?",
                                            "start": start if start is not None else (prev_ts if prev_ts is not None else ts),
-                                           "usage": {}}
+                                           "usage": {}, "turn": turn, "effort": None, "skill": None}
                     msg["last"] = max(msg["last"], ts)
+                    msg["effort"] = msg["effort"] or r.get("effort")
+                    msg["skill"] = msg["skill"] or r.get("attributionSkill")
                     if m.get("usage"):
                         msg["usage"] = m["usage"]
                     for b in m.get("content") or []:
                         if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("id"):
                             tool_uses[b["id"]] = {"id": b["id"], "name": b.get("name") or "?", "ts": ts,
-                                                  "input": b.get("input") or {}, "mode": mode, "model": msg["model"]}
+                                                  "input": b.get("input") or {}, "mode": mode, "model": msg["model"],
+                                                  "turn": turn}
             elif t == "api-request":
                 if r.get("id") and ts is not None:
                     api_req[r["id"]] = ts
@@ -241,10 +269,15 @@ def parse_file(path: str, rel: str, settings: ParseSettings) -> Parsed:
                             results[b["tool_use_id"]] = {"ts": ts, "is_error": bool(b.get("is_error")),
                                                          "tur": r.get("toolUseResult"),
                                                          "pd": r.get("permissionDecision")}
-                if ts is not None and not ident["agent_id"] and _is_human_prompt(r):
-                    prompts.append({"uuid": r.get("uuid") or f"{rel}#{len(prompts)}", "ts": ts})
+                origin = turn_origin(r) if ts is not None and not ident["agent_id"] else None
+                if origin:
+                    turn = r.get("uuid") or f"{rel}#{len(turns)}"
+                    turns.append({"uuid": turn, "ts": ts, "origin": origin})
             elif t == "system" and r.get("subtype") == "compact_boundary":
                 info["compactions"] += 1
+            elif t == "system" and r.get("subtype") == "turn_duration":
+                if ts is not None and r.get("durationMs"):
+                    timers.append((ts, r["durationMs"] / 1000))
             elif t == "custom-title":
                 info["title"] = r.get("customTitle") or info["title"]
             elif t == "ai-title":
@@ -266,6 +299,7 @@ def parse_file(path: str, rel: str, settings: ParseSettings) -> Parsed:
         cc = u.get("cache_creation") or {}
         out_msgs.append({
             "message_id": msg["id"], "ts": msg["first"], "day": local_day(msg["first"], tz), "model": msg["model"],
+            "turn": msg["turn"], "effort": msg["effort"], "skill": msg["skill"],
             "input": int(u.get("input_tokens") or 0), "output": int(u.get("output_tokens") or 0),
             "thinking": int((u.get("output_tokens_details") or {}).get("thinking_tokens") or 0),
             "cache_read": int(u.get("cache_read_input_tokens") or 0),
@@ -295,24 +329,32 @@ def parse_file(path: str, rel: str, settings: ParseSettings) -> Parsed:
             "tool_use_id": tu["id"], "ts": tu["ts"], "day": local_day(tu["ts"], tz), "name": tu["name"],
             "exe": exe, "model": tu["model"], "is_error": int(bool(res and res["is_error"])),
             "is_background": int(background), "is_decision": int(decision),
-            "human_approved": int(human_approved), "duration": duration,
+            "human_approved": int(human_approved), "duration": duration, "turn": tu["turn"],
         })
 
     # Without an api-request record the start is guessed from the record before the
     # response; a guess over an hour before the response is a gap, not a request.
     api_iv = [(m["start"] if m["last"] - m["start"] <= 3600 else m["first"], m["last"]) for m in msgs.values()]
     claude_iv = union(api_iv + tool_iv)
-    busy_rows = _busy_rows(rel, prompts, claude_iv, union(api_iv), msgs, tz)
+    busy_rows = _busy_rows(rel, turns, claude_iv, union(api_iv), tz)
 
-    # Each prompt's Claude time, for per-prompt averages and longest turns.
-    per_prompt: dict[str, list[float]] = {}
+    # Each turn's Claude time, and Claude Code's own timer for it: a timer ends its turn,
+    # so it belongs to the turn that had started by the time it began.
+    per_turn: dict[str, list[float]] = {}
     for b in busy_rows:
-        acc = per_prompt.setdefault(b["prompt_key"], [0.0, 0.0])
+        acc = per_turn.setdefault(b["turn"], [0.0, 0.0])
         acc[0] += b["claude_s"]
         acc[1] += b["api_s"]
-    out_prompts = [{"uuid": p["uuid"], "ts": p["ts"], "day": local_day(p["ts"], tz),
-                    "claude_s": per_prompt.get(p["uuid"], [0, 0])[0], "api_s": per_prompt.get(p["uuid"], [0, 0])[1]}
-                   for p in prompts]
+    starts = sorted(turns, key=lambda x: x["ts"])
+    start_ts = [x["ts"] for x in starts]
+    timed: dict[str, float] = {}
+    for end, secs in timers:
+        i = _last_le(start_ts, end - secs + 1.0)
+        if i >= 0:
+            timed[starts[i]["uuid"]] = timed.get(starts[i]["uuid"], 0.0) + secs
+    out_turns = [{"uuid": x["uuid"], "ts": x["ts"], "day": local_day(x["ts"], tz), "origin": x["origin"],
+                  "claude_s": per_turn.get(x["uuid"], [0, 0])[0], "api_s": per_turn.get(x["uuid"], [0, 0])[1],
+                  "cc_turn_s": timed.get(x["uuid"])} for x in turns]
 
     models: dict[str, int] = {}
     for m in out_msgs:
@@ -330,39 +372,39 @@ def parse_file(path: str, rel: str, settings: ParseSettings) -> Parsed:
         "title": info["title"] or info["ai_title"], "cc_version": info["version"], "branch": info["branch"],
         "entrypoint": info["entrypoint"], "account": info["account"],
         "model": max(models, key=models.get) if models else None,
-        "n_prompts": len(prompts), "n_compactions": info["compactions"],
+        "n_prompts": sum(x["origin"] == "human" for x in turns), "n_turns": len(turns), "n_compactions": info["compactions"],
         "cost_usd": cost.get("totalCostUSD"),
         "cost_state": json.dumps(cost.get("modelUsage")) if cost.get("modelUsage") else None,
         "is_fork": int(bool(meta.get("isFork"))), "background": int(meta.get("requestShape") == "background"),
         "spans": json.dumps(activity_spans(claude_iv)),
     }
-    return Parsed(thread=thread, messages=out_msgs, tools=out_tools, prompts=out_prompts, busy=busy_rows)
+    return Parsed(thread=thread, messages=out_msgs, tools=out_tools, turns=out_turns, busy=busy_rows)
 
 
-def _busy_rows(rel, prompts, claude_iv, api_iv, msgs, tz):
-    """Busy seconds per (prompt, local day), for Claude time and API-only time.
+def _busy_rows(rel, turns, claude_iv, api_iv, tz):
+    """Busy seconds per (turn, local day, local hour), for Claude time and API-only time.
 
-    Intervals are cut at each human prompt, so work is credited to the prompt
-    it followed; work before the first prompt (all of a subagent's) goes to a
+    Intervals are cut at each turn start, so work is credited to the turn it
+    followed; work before the first turn (all of a subagent's) goes to a
     per-file key.
     """
-    cuts = sorted(p["ts"] for p in prompts)
-    keys = [p["uuid"] for p in sorted(prompts, key=lambda p: p["ts"])]
-    acc: dict[tuple[str, str], list[float]] = {}
+    cuts = sorted(x["ts"] for x in turns)
+    keys = [x["uuid"] for x in sorted(turns, key=lambda x: x["ts"])]
+    acc: dict[tuple[str, str, int], list[float]] = {}
 
     def add(intervals, idx):
         for s, e in intervals:
-            # Split at prompt boundaries that fall inside the interval.
+            # Split at turn starts that fall inside the interval.
             bounds = [s] + [c for c in cuts if s < c < e] + [e]
             for a, b in zip(bounds, bounds[1:]):
                 pos = _last_le(cuts, a)
                 key = keys[pos] if pos >= 0 else f"{rel}#pre"
-                for day, sec in split_by_day(a, b, tz):
-                    acc.setdefault((key, day), [0.0, 0.0])[idx] += sec
+                for day, hour, sec in split_by_hour(a, b, tz):
+                    acc.setdefault((key, day, hour), [0.0, 0.0])[idx] += sec
 
     add(claude_iv, 0)
     add(api_iv, 1)
-    return [{"prompt_key": k, "day": d, "claude_s": v[0], "api_s": v[1]} for (k, d), v in acc.items()]
+    return [{"turn": k, "day": d, "hour": h, "claude_s": v[0], "api_s": v[1]} for (k, d, h), v in acc.items()]
 
 
 def _last_le(sorted_vals, x):

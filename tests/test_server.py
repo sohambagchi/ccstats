@@ -47,6 +47,11 @@ def test_endpoints(base):
     assert get(base + "/api/tools")["by_name"][0]["name"] == "Bash"
     assert get(base + "/api/sessions")[0]["session_id"] == "s1"
     assert get(base + "/api/dimensions")["host"] == ["spore"]
+    assert get(base + "/api/turns?sort=claude&limit=1")[0]["uuid"] == "P2"
+    assert get(base + "/api/timecheck")["timed"] == 1
+    assert sum(c["turns"] for c in get(base + "/api/heatmap")["cells"]) == 3
+    assert {r["effort"] for r in get(base + "/api/cost?by=effort")} == {"xhigh", None}
+    assert {r["origin"] for r in get(base + "/api/summary?group=total&by=origin")["rows"]} >= {"human", "task-notification"}
     assert "spore/claude" in get(base + "/api/hosts")["archive"]
     with urllib.request.urlopen(base + "/", timeout=5) as r:
         assert b"Claude Code usage" in r.read()
@@ -110,6 +115,11 @@ def test_query_client(base, tmp_path, capsys):
     assert "s1" in capsys.readouterr().out
     cq["main"](["session", "spore", "claude", "s1"])
     assert "main" in capsys.readouterr().out
+    cq["main"](["turns", "--origin", "autonomous"])
+    assert "task-notification" in capsys.readouterr().out
+    for cmd in (["cost", "--by", "effort"], ["heatmap"], ["timecheck"]):
+        cq["main"](cmd)
+        assert capsys.readouterr().out, cmd
     with pytest.raises(SystemExit, match="404"):
         cq["main"](["session", "spore", "claude", "nope"])
 

@@ -324,7 +324,7 @@ td.tree .t { color: var(--muted); }
 
     <div class="card mb" id="api-filters">
       <h2>Filters</h2>
-      <p>Every stats endpoint (summary, models, tools, sessions) takes the same filters. All are optional; without a date
+      <p>Every stats endpoint (summary, cost, tools, turns, heatmap, timecheck, sessions) takes the same filters. All are optional; without a date
         filter the whole archive is covered.</p>
       <div class="scroll"><table>
         <thead><tr><th>Parameter</th><th>Value</th><th>Meaning</th></tr></thead>
@@ -335,7 +335,7 @@ td.tree .t { color: var(--muted); }
           <tr><td><code>host</code></td><td class="nw">name</td><td>Machine the transcripts came from, e.g. <code>spore</code>.</td></tr>
           <tr><td><code>profile</code></td><td class="nw">name</td><td>Claude Code config dir on that host, e.g. <code>claude</code> for <code>~/.claude</code>.</td></tr>
           <tr><td><code>project</code></td><td class="nw">name</td><td>Project (working directory name). Subagents count toward their session's project.</td></tr>
-          <tr><td><code>model</code></td><td class="nw">model id</td><td>Restricts tokens, cost and tool calls to responses from that model. Prompts, time and session counts are not split by model.</td></tr>
+          <tr><td><code>model</code></td><td class="nw">model id</td><td>Restricts tokens, cost and tool calls to responses from that model. Turns, prompts, time and session counts are not split by model.</td></tr>
         </tbody>
       </table></div>
       <p>Valid values for <code>host</code>, <code>profile</code>, <code>project</code> and <code>model</code> come from <code>/api/dimensions</code>.
@@ -349,16 +349,17 @@ td.tree .t { color: var(--muted); }
       <p>Stats per time bucket, optionally split by one dimension.</p>
       <ul>
         <li><code>group</code> = <code>day</code> (default), <code>week</code> (ISO week, <code>2026-W45</code>), <code>month</code> (<code>2026-11</code>) or <code>total</code></li>
-        <li><code>by</code> = <code>host</code>, <code>profile</code>, <code>project</code> or <code>model</code>; each row then has that key.
-          With <code>by=model</code> only token, cost and tool fields are filled.</li>
+        <li><code>by</code> = <code>host</code>, <code>profile</code>, <code>project</code>, <code>model</code> or <code>origin</code>; each row then has that key.
+          With <code>by=model</code> only token, cost and tool fields are filled. <code>by=origin</code> splits by who started the turn the work
+          belongs to (see Units below); subagents count toward the turn that spawned them, and work no turn can be found for is <code>unknown</code>.</li>
         <li>Plus the filters.</li>
       </ul>
       <pre class="ex" data-path="/api/summary?group=week&amp;by=host&amp;days=28"></pre>
       <p>Answer: <code>{"group", "by", "filter", "rows": [...]}</code>, rows sorted by bucket. Each row:</p>
       <div class="scroll"><table class="fields"><tbody>
         <tr><td><code>bucket</code></td><td>Day, week, month or <code>"total"</code>.</td></tr>
-        <tr><td><code>sessions</code></td><td>Main sessions with a response or prompt in the bucket.</td></tr>
-        <tr><td><code>prompts</code></td><td>Human prompts.</td></tr>
+        <tr><td><code>sessions</code></td><td>Main sessions with a response or turn in the bucket.</td></tr>
+        <tr><td><code>turns</code>, <code>prompts</code></td><td>Turns started, and the human prompts among them.</td></tr>
         <tr><td><code>subagents</code>, <code>sessions_with_subagents</code>, <code>agent_types</code></td><td>Subagents started, sessions that started any, and a count per agent type.</td></tr>
         <tr><td><code>max_spawn_depth</code>, <code>mean_spawn_depth</code>, <code>peak_concurrent_subagents</code></td><td>How deep subagents nested and how many ran at once.</td></tr>
         <tr><td><code>claude_s</code>, <code>api_s</code></td><td>Claude time and its API-only part, main threads, in seconds.</td></tr>
@@ -369,17 +370,57 @@ td.tree .t { color: var(--muted); }
         <tr><td><code>tool_calls</code>, <code>tool_calls_sub</code>, <code>tool_errors</code>, <code>tool_background</code></td><td>All tool calls, those made by subagents, those that errored, those run in the background.</td></tr>
       </tbody></table></div>
 
+      <h3 id="api-cost">GET /api/cost</h3>
+      <p>Tokens and estimated cost split one way, most expensive first. Filters apply.</p>
+      <ul>
+        <li><code>by</code> = <code>model</code> (default), <code>effort</code> (the effort level each response was made at, null where Claude Code
+          recorded none), <code>skill</code> (the skill in effect, null for none) or <code>origin</code> (who started the turn)</li>
+      </ul>
+      <pre class="ex" data-path="/api/cost?by=skill&amp;days=30"></pre>
+      <p>Rows: the <code>by</code> field, <code>api_calls</code>, <code>api_calls_sub</code> (those from subagents), <code>input</code>, <code>output</code>,
+        <code>thinking</code>, <code>cache_read</code>, <code>cache_write</code>, <code>usd</code>; with <code>by=model</code> also <code>priced</code>
+        (false when the model isn't in the price table, so <code>usd</code> is 0).</p>
+
       <h3 id="api-models">GET /api/models</h3>
-      <p>Tokens and estimated cost per model, most expensive first. Filters apply.</p>
+      <p>The same as <code>/api/cost?by=model</code>, kept for older clients.</p>
       <pre class="ex" data-path="/api/models?days=30"></pre>
-      <p>Rows: <code>model</code>, <code>api_calls</code>, <code>input</code>, <code>output</code>, <code>thinking</code>, <code>cache_read</code>,
-        <code>cache_write</code>, <code>usd</code>, <code>priced</code> (false when the model isn't in the price table, so <code>usd</code> is 0).</p>
 
       <h3 id="api-tools">GET /api/tools</h3>
       <p>Tool calls by tool name, and Bash commands by the program they run. <code>top</code> = rows per list (default 25). Filters apply.</p>
       <pre class="ex" data-path="/api/tools?days=7&amp;top=10"></pre>
       <p>Answer: <code>{"by_name": [{name, calls, errors, background, in_subagents, seconds}], "bash": [{exe, calls, errors, background}]}</code>.
         <code>seconds</code> is wall time from call to result.</p>
+
+      <h3 id="api-turns">GET /api/turns</h3>
+      <p>Main-thread turns started in the range, each with everything it led to.</p>
+      <ul>
+        <li><code>sort</code> = <code>claude</code> (default), <code>agent</code>, <code>cost</code>, <code>timer</code> or <code>recent</code></li>
+        <li><code>origin</code> = one origin (<code>human</code>, <code>task-notification</code>, ...) or <code>autonomous</code> (every origin but <code>human</code>)</li>
+        <li><code>limit</code> = rows, default 50, at most 1000</li>
+        <li>Plus the filters, except <code>model</code>.</li>
+      </ul>
+      <pre class="ex" data-path="/api/turns?days=7&amp;sort=agent&amp;limit=5"></pre>
+      <p>Rows: <code>uuid</code>, <code>host</code>, <code>profile</code>, <code>session_id</code>, <code>project</code>, <code>title</code> (the session's),
+        <code>ts</code>, <code>day</code>, <code>origin</code>, <code>claude_s</code>, <code>api_s</code>, <code>agent_s</code> and <code>subagents</code>
+        (the subagents it spawned, nested ones included), <code>tool_calls</code> and <code>usd</code> (its own and its subagents'),
+        <code>cc_turn_s</code> (Claude Code's own timer for the turn, null when it recorded none).</p>
+
+      <h3 id="api-heatmap">GET /api/heatmap</h3>
+      <p>When work happens: per local weekday and hour, Claude time, agent time, turns started and the human prompts among them.
+        Filters apply, except <code>model</code>.</p>
+      <pre class="ex" data-path="/api/heatmap?days=28"></pre>
+      <p>Answer: <code>{"cells": [{weekday, hour, claude_s, agent_s, turns, prompts}], "weekday_counts": [...]}</code>.
+        <code>weekday</code> is 0 for Monday to 6 for Sunday; empty cells are left out. <code>weekday_counts</code> says how many Mondays
+        to Sundays the range covers, for averages.</p>
+
+      <h3 id="api-timecheck">GET /api/timecheck</h3>
+      <p>Claude time per turn next to Claude Code's own turn timer (<code>system/turn_duration</code>). The timer runs from the prompt to
+        control returning and includes waits for a human that Claude time leaves out, so ratios at or below 1 are expected; many far
+        above 1 would point at a Claude time bug. Filters apply, except <code>model</code>.</p>
+      <pre class="ex" data-path="/api/timecheck?days=30"></pre>
+      <p>Answer: <code>turns</code> (in range), <code>timed</code> (those with a timer), <code>claude_s</code> and <code>timer_s</code> (summed over
+        the timed turns), <code>ratio_p10</code>, <code>ratio_median</code>, <code>ratio_p90</code> (Claude time ÷ timer per turn),
+        <code>within_10pct</code>, <code>over_10pct</code> (turn counts), <code>points</code> (<code>[[timer_s, claude_s, origin], ...]</code>).</p>
 
       <h3 id="api-sessions">GET /api/sessions</h3>
       <p>Main sessions active in the range, each with its subagents folded in.</p>
@@ -391,23 +432,24 @@ td.tree .t { color: var(--muted); }
       <pre class="ex" data-path="/api/sessions?days=7&amp;sort=subagents&amp;limit=5"></pre>
       <p>Rows: <code>host</code>, <code>profile</code>, <code>session_id</code>, <code>project</code>, <code>cwd</code>, <code>title</code>,
         <code>model</code>, <code>cc_version</code>, <code>branch</code>, <code>first_ts</code>, <code>last_ts</code>, <code>first_day</code>, <code>last_day</code>,
-        <code>prompts</code>, <code>compactions</code>, <code>subagents</code>, <code>agent_types</code>, <code>depth_counts</code>, <code>forks</code>,
+        <code>prompts</code>, <code>turns</code>, <code>compactions</code>, <code>subagents</code>, <code>agent_types</code>, <code>depth_counts</code>, <code>forks</code>,
         <code>background_agents</code>, <code>max_spawn_depth</code>, <code>peak_concurrent_subagents</code>, <code>api_calls</code>, <code>tool_calls</code>,
         <code>tool_errors</code>, <code>claude_s</code>, <code>api_s</code>, <code>agent_s</code>, <code>usd</code>, <code>tokens</code>
         (<code>input</code>, <code>output</code>, <code>thinking</code>, <code>cache_read</code>, <code>cache_write</code>), <code>path</code> (in the archive).
         <code>cost_usd</code> is Claude Code's own figure when it recorded one, else null.</p>
 
       <h3 id="api-session">GET /api/session</h3>
-      <p>One session in full: its row as above, every thread (main and subagents) with stats and busy spans, and its prompts.
+      <p>One session in full: its row as above, every thread (main and subagents) with stats and busy spans, and its turns.
         <code>host</code>, <code>profile</code> and <code>id</code> (the <code>session_id</code>) are required; an unknown session is a 404.</p>
       <pre class="ex" data-path="/api/session?host=spore&amp;profile=claude&amp;id=SESSION_ID" data-no-open></pre>
-      <p>Answer: <code>{"session", "threads", "prompts"}</code>. Each thread has <code>id</code> (<code>"main"</code> or the agent id),
+      <p>Answer: <code>{"session", "threads", "turns", "prompts"}</code>. Each thread has <code>id</code> (<code>"main"</code> or the agent id),
         <code>parent</code> (null for main), <code>is_subagent</code>, <code>agent_type</code>, <code>description</code>, <code>spawn_depth</code>,
         <code>is_fork</code>, <code>background</code>, <code>model</code>, <code>first_ts</code>, <code>last_ts</code>,
         <code>spans</code> (<code>[[start, end], ...]</code> when it was busy), and <code>api_calls</code>, <code>input</code>, <code>output</code>,
         <code>thinking</code>, <code>cache_read</code>, <code>cache_write</code>, <code>tool_calls</code>, <code>tool_errors</code>,
         <code>agent_calls</code>, <code>claude_s</code>, <code>api_s</code>, <code>usd</code>. Build the tree by following <code>parent</code>.
-        <code>prompts</code> is <code>[{ts, claude_s}]</code>: each human prompt and the Claude time it led to.</p>
+        <code>turns</code> is <code>[{uuid, ts, origin, claude_s, api_s, agent_s, cc_turn_s, subagents, tool_calls, usd}]</code>, as in
+        <code>/api/turns</code>; <code>prompts</code> is <code>[{ts, claude_s}]</code> for the human ones.</p>
 
       <h3 id="api-dimensions">GET /api/dimensions</h3>
       <p>Values for the filters: <code>{"host": [...], "profile": [...], "project": [...], "model": [...], "first_day", "last_day"}</code>. No parameters.</p>
@@ -442,6 +484,10 @@ td.tree .t { color: var(--muted); }
         <li><b>Claude time</b> (<code>claude_s</code>) is the union of model-response and tool-run intervals in main threads, minus waits for a human;
           a tool call a human had to approve counts for at most 10 minutes (the hub's <code>approval_cap_minutes</code>). <b>Agent time</b> (<code>agent_s</code>) is the same per subagent, summed,
           so it can exceed wall time when agents run in parallel.</li>
+        <li>A <b>turn</b> starts at each user record Claude Code marks with an origin: <code>human</code> (a typed or queued prompt),
+          <code>task-notification</code> (a background agent or command finished), <code>peer</code> (a message from another Claude session),
+          <code>scheduled</code> (a scheduled wakeup or routine), <code>auto-continuation</code> (resumed after a usage limit) or <code>coordinator</code>.
+          Time, responses and tool calls belong to the turn they follow; a subagent's belong to the turn whose <code>Agent</code> call spawned it.</li>
         <li><code>usd</code> and <code>cost</code> are estimates: tokens priced at API list rates, not what a subscription bills.</li>
         <li>Token counts are as the API reported them; <code>thinking</code> is part of <code>output</code>.</li>
       </ul>
@@ -468,6 +514,10 @@ td.tree .t { color: var(--muted); }
 <span class="prompt">$ </span>ccstats-query sessions --days 3 --sort cost --limit 10
 <span class="prompt">$ </span>ccstats-query session spore claude &lt;session-id&gt;     # agent tree
 <span class="prompt">$ </span>ccstats-query models --days 30 --project ccstats
+<span class="prompt">$ </span>ccstats-query cost --days 30 --by skill             # or effort, origin
+<span class="prompt">$ </span>ccstats-query turns --days 7 --sort agent --origin autonomous
+<span class="prompt">$ </span>ccstats-query heatmap --days 28
+<span class="prompt">$ </span>ccstats-query timecheck --days 30
 <span class="prompt">$ </span>ccstats-query tools --days 7 --top 10
 <span class="prompt">$ </span>ccstats-query hosts                                 # JSON
 <span class="prompt">$ </span>ccstats-query refresh

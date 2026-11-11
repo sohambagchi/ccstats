@@ -4,7 +4,7 @@ import shutil
 import pytest
 
 from ccstats import metrics, store
-from ccstats.parse import ParseSettings, bash_executable, parse_file, split_by_day
+from ccstats.parse import ParseSettings, bash_executable, parse_file, split_by_day, split_by_hour
 from transcripts import api_request, assistant, prompt, text, tool_result, tool_use, ts, usage, write
 
 MAIN = "spore/claude/projects/-home-u-dev-proj/s1.jsonl"
@@ -26,6 +26,8 @@ def main_session():
         tool_result("10:08:25.500", "t3", tur={"backgroundTaskId": "b1", "stdout": ""}),
         api_request("10:08:26", "r4"),
         assistant("10:08:30", "m4", [text("started it")], rid="r4"),
+        # Claude Code's own timer for the turn: the prompt to control returning, question included.
+        {"type": "system", "subtype": "turn_duration", "timestamp": ts("10:08:30.200"), "durationMs": 510200},
         # Background task finishes later and wakes Claude without a human prompt.
         {"type": "user", "timestamp": ts("10:20:00"), "uuid": "tn", "origin": {"kind": "task-notification"},
          "message": {"role": "user", "content": "<task-notification>done</task-notification>"}},
@@ -33,7 +35,8 @@ def main_session():
         assistant("10:20:04", "m5", [text("it finished")], rid="r5"),
         prompt("10:30:00", uuid="P2", mode="default"),
         api_request("10:30:01", "r6"),
-        assistant("10:30:02", "m6", [tool_use("t4", command="make -j8")], rid="r6"),
+        {**assistant("10:30:02", "m6", [tool_use("t4", command="make -j8")], rid="r6"),
+         "effort": "xhigh", "attributionSkill": "docky"},
         # Approved by a human after a long wait: capped at the approval cap.
         tool_result("10:50:02", "t4", is_error=True, pd={"decision": "accept", "source": "user_temporary"}),
         api_request("10:50:03", "r7"),
@@ -69,14 +72,26 @@ def test_main_session(tmp_path, settings):
     assert tools["t3"]["is_background"] == 1 and tools["t3"]["exe"] == "sleep"
     assert tools["t4"]["human_approved"] == 1 and tools["t4"]["is_error"] == 1 and tools["t4"]["exe"] == "make"
 
-    per_prompt = {r["uuid"]: r for r in p.prompts}
-    # P1: [1,15] (API then git) + [15.5,20] + [8:21,8:25.5] + [8:26,8:30] + [20:01,20:04]
-    #     = 14 + 4.5 + 4.5 + 4 + 3; the 8-minute question is excluded.
-    assert per_prompt["P1"]["claude_s"] == pytest.approx(30.0)
-    assert per_prompt["P1"]["api_s"] == pytest.approx(4 + 4.5 + 4 + 4 + 3)
+    turns = {r["uuid"]: r for r in p.turns}
+    assert {u: r["origin"] for u, r in turns.items()} == {"P1": "human", "tn": "task-notification", "P2": "human"}
+    assert p.thread["n_turns"] == 3
+    # P1: [1,15] (API then git) + [15.5,20] + [8:21,8:25.5] + [8:26,8:30]
+    #     = 14 + 4.5 + 4.5 + 4; the 8-minute question is excluded.
+    assert turns["P1"]["claude_s"] == pytest.approx(27.0)
+    assert turns["P1"]["api_s"] == pytest.approx(4 + 4.5 + 4 + 4)
+    assert turns["P1"]["cc_turn_s"] == pytest.approx(510.2)
+    # The background task's notification starts its own turn: [20:01, 20:04].
+    assert turns["tn"]["claude_s"] == pytest.approx(3) and turns["tn"]["cc_turn_s"] is None
     # P2: [30:01, 30:02 + 600 cap] + [50:03, 50:05]
-    assert per_prompt["P2"]["claude_s"] == pytest.approx(601 + 2)
-    assert per_prompt["P2"]["api_s"] == pytest.approx(3)
+    assert turns["P2"]["claude_s"] == pytest.approx(601 + 2)
+    assert turns["P2"]["api_s"] == pytest.approx(3)
+
+    msgs = {m["message_id"]: m for m in p.messages}
+    assert (msgs["m1"]["turn"], msgs["m5"]["turn"], msgs["m6"]["turn"]) == ("P1", "tn", "P2")
+    assert (msgs["m6"]["effort"], msgs["m6"]["skill"]) == ("xhigh", "docky") and msgs["m1"]["effort"] is None
+    assert tools["t4"]["turn"] == "P2"
+    # Busy time is kept per turn, local day and hour.
+    assert {(b["turn"], b["hour"]) for b in p.busy} == {("P1", 10), ("tn", 10), ("P2", 10)}
 
 
 def test_legacy_without_api_request_records(tmp_path, settings):
@@ -86,12 +101,15 @@ def test_legacy_without_api_request_records(tmp_path, settings):
         assistant("09:00:10", "m1", [tool_use("t1", command="ls")]),
         tool_result("09:00:12", "t1"),
         assistant("09:00:20", "m2", [text()]),
+        {"type": "user", "timestamp": ts("09:30:00"), "uuid": "N1",
+         "message": {"role": "user", "content": "<task-notification>done</task-notification>"}},
     ]
     p = parse_file(write(tmp_path, rel, recs), rel, settings)
     assert p.thread["n_prompts"] == 1
+    assert [(t["uuid"], t["origin"]) for t in p.turns] == [("L1", "human"), ("N1", "task-notification")]
     # Each response starts at the record before it: [0,10] + tool [10,12] + [12,20].
-    assert p.prompts[0]["claude_s"] == pytest.approx(20)
-    assert p.prompts[0]["api_s"] == pytest.approx(18)
+    assert p.turns[0]["claude_s"] == pytest.approx(20)
+    assert p.turns[0]["api_s"] == pytest.approx(18)
 
 
 def test_midnight_split_in_local_time(tmp_path):
@@ -100,16 +118,26 @@ def test_midnight_split_in_local_time(tmp_path):
     recs = [prompt("06:59:50", day="2026-11-06"), api_request("06:59:50", "r", day="2026-11-06"),
             assistant("07:00:10", "m", [text()], rid="r", day="2026-11-06")]
     p = parse_file(write(tmp_path, rel, recs), rel, ParseSettings(tz="America/Denver"))
-    days = {b["day"]: b["claude_s"] for b in p.busy}
-    assert days == {"2026-11-05": pytest.approx(10), "2026-11-06": pytest.approx(10)}
+    cells = {(b["day"], b["hour"]): b["claude_s"] for b in p.busy}
+    assert cells == {("2026-11-05", 23): pytest.approx(10), ("2026-11-06", 0): pytest.approx(10)}
     # The prompt was sent before midnight; the response arrived after it.
-    assert p.prompts[0]["day"] == "2026-11-05" and p.messages[0]["day"] == "2026-11-06"
+    assert p.turns[0]["day"] == "2026-11-05" and p.messages[0]["day"] == "2026-11-06"
 
 
 def test_split_by_day_dst_and_utc():
     from zoneinfo import ZoneInfo
     pieces = list(split_by_day(0, 86400 * 2, ZoneInfo("UTC")))
     assert pieces == [("1970-01-01", 86400), ("1970-01-02", 86400)]
+
+
+def test_split_by_hour_follows_local_hour_marks():
+    from zoneinfo import ZoneInfo
+    # Kolkata is UTC+5:30, so local hours turn at :30 UTC.
+    assert list(split_by_hour(0, 3600, ZoneInfo("Asia/Kolkata"))) == [("1970-01-01", 5, 1800), ("1970-01-01", 6, 1800)]
+    # Denver falls back on 2026-11-01 at 08:00Z: 01:00 local happens twice, as two separate hours.
+    start = 1793520000 - 1800  # 07:30Z = 01:30 MDT
+    pieces = list(split_by_hour(start, start + 7200, ZoneInfo("America/Denver")))
+    assert [(h, s) for _, h, s in pieces] == [(1, 1800), (1, 3600), (2, 1800)]
 
 
 def _subagent(clock_start, clock_end, agent_id, agent_type, depth):
@@ -144,7 +172,7 @@ def test_store_and_summary(tmp_path, settings):
     assert row["bucket"] == "2026-11-05"
     # The fork only repeats s1's records, so it adds no activity, prompts, tokens or time.
     assert row["sessions"] == 1
-    assert row["prompts"] == 2
+    assert row["prompts"] == 2 and row["turns"] == 3
     assert row["tokens"]["main"]["output"] == 700
     assert row["tokens"]["sub"]["output"] == 80
     assert row["claude_s"] == pytest.approx(633)
@@ -159,6 +187,11 @@ def test_store_and_summary(tmp_path, settings):
 
     by_model = metrics.summary(conn, metrics.Filter(), "total", by="model")
     assert [r["model"] for r in by_model] == ["claude-opus-5-5"]
+    by_origin = {r["origin"]: r for r in metrics.summary(conn, metrics.Filter(), "total", by="origin")}
+    assert by_origin["human"]["claude_s"] == pytest.approx(630) and by_origin["human"]["prompts"] == 2
+    assert by_origin["task-notification"]["claude_s"] == pytest.approx(3) and by_origin["task-notification"]["turns"] == 1
+    # These subagents' spawning calls are not in the transcript: no turn to credit them to.
+    assert by_origin["unknown"]["agent_s"] == pytest.approx(720) and by_origin["unknown"]["subagents"] == 2
 
     t = metrics.tools(conn, metrics.Filter())
     assert {r["name"]: r["calls"] for r in t["by_name"]} == {"Bash": 3, "AskUserQuestion": 1}
@@ -222,6 +255,49 @@ def test_session_rollup_and_agent_tree(tmp_path, settings):
 
     # Nothing changed: no session is recomputed.
     assert store.refresh(conn, str(archive), settings)["sessions"] == 0
+
+
+def test_turns_carry_their_subagents(tmp_path, settings):
+    """A turn's stats include the subagents it spawned, nested ones too, and their cost and tools."""
+    archive = tmp_path / "archive"
+    write(archive, MAIN, main_session() + [
+        prompt("11:00:00", uuid="P3"), api_request("11:00:01", "r8"),
+        assistant("11:00:02", "m8", [tool_use("tu-c3", "Agent", prompt="go")], rid="r8"),
+        tool_result("11:04:00", "tu-c3"),
+        {"type": "system", "subtype": "turn_duration", "timestamp": ts("11:04:00"), "durationMs": 240000},
+    ])
+    rel, recs, meta = _subagent("11:00:03", "11:03:00", "c3", "general-purpose", 1)
+    recs.insert(2, assistant("11:01:00", "m-c3-spawn", [tool_use("tu-d4", "Agent", prompt="deeper")], u=usage(out=5)))
+    write(archive, rel, recs, meta=meta)
+    rel, recs, meta = _subagent("11:01:01", "11:02:01", "d4", "Explore", 2)
+    write(archive, rel, recs, meta=meta)
+    conn = store.connect(str(tmp_path / "db.sqlite"))
+    store.refresh(conn, str(archive), settings)
+
+    [p3] = metrics.turns(conn, metrics.Filter(), sort="agent", limit=1)
+    assert p3["uuid"] == "P3" and p3["origin"] == "human" and p3["subagents"] == 2
+    assert p3["claude_s"] == pytest.approx(239) and p3["cc_turn_s"] == pytest.approx(240)
+    assert p3["agent_s"] == pytest.approx(177 + 60) and p3["tool_calls"] == 2
+    assert p3["usd"] == pytest.approx(conn.execute(
+        "SELECT SUM(usd) FROM u_messages WHERE message_id IN ('m8', 'm-c3', 'm-c3-spawn', 'm-d4')").fetchone()[0])
+    assert [t["uuid"] for t in metrics.turns(conn, metrics.Filter(), origin="autonomous")] == ["tn"]
+
+    check = metrics.timecheck(conn, metrics.Filter())
+    assert check["turns"] == 4 and check["timed"] == 2
+    assert check["ratio_median"] == pytest.approx(239 / 240, abs=1e-3)
+
+    hm = metrics.heatmap(conn, metrics.Filter())
+    cells = {(c["weekday"], c["hour"]): c for c in hm["cells"]}
+    assert cells[(3, 11)]["agent_s"] == pytest.approx(237) and cells[(3, 11)]["prompts"] == 1  # a Thursday
+    assert cells[(3, 10)]["turns"] == 3 and hm["weekday_counts"][3] == 1
+
+    efforts = {r["effort"]: r["api_calls"] for r in metrics.cost(conn, metrics.Filter(), "effort")}
+    assert efforts == {"xhigh": 1, None: 10}
+    skills = {r["skill"] for r in metrics.cost(conn, metrics.Filter(), "skill")}
+    assert skills == {"docky", None}
+    d = metrics.session_detail(conn, "spore", "claude", "s1")
+    assert [t["origin"] for t in d["turns"]] == ["human", "task-notification", "human", "human"]
+    assert len(d["prompts"]) == 3
 
 
 def test_dedup_winner_moves_incrementally(tmp_path, settings):

@@ -1,6 +1,6 @@
 # Claude time is the union of API and tool intervals, minus human waits
 
-**Status:** accepted
+**Status:** accepted; amended by [2026-11-10-2227-turns-partition-the-work](2026-11-10-2227-turns-partition-the-work.md) (time is cut at every turn, not only at human prompts)
 
 **Context:** `system/turn_duration` is sparse and includes hours of background waiting, so it can't measure how long Claude worked.
 **Decision:** Per thread, Claude time = union of

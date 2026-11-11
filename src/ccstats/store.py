@@ -12,22 +12,25 @@ from zoneinfo import ZoneInfo
 from . import pricing
 from .parse import ParseSettings, Parsed, iso_week, local_day, parse_file, thread_identity
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 # Bump when rollup_session derives something new from rows already stored: the next
 # refresh rolls up every session again instead of rebuilding the database.
-ROLLUP_VERSION = "2"
+ROLLUP_VERSION = "3"
 
 # Row tables and the key that identifies one record across files. A forked or copied
 # session repeats earlier records, so each record counts once: the copy in the
 # lexically first file wins. Winners are kept in u_<table>, refreshed only for the
 # keys a refresh touched.
 _COLUMNS = {
-    "messages": ("path TEXT, message_id TEXT, ts REAL, day TEXT, week TEXT, model TEXT, input INT, output INT, "
-                 "thinking INT, cache_read INT, cache_write INT, cache_write_1h INT, usd REAL", ("message_id",)),
+    "messages": ("path TEXT, message_id TEXT, ts REAL, day TEXT, week TEXT, model TEXT, turn TEXT, effort TEXT, "
+                 "skill TEXT, input INT, output INT, thinking INT, cache_read INT, cache_write INT, cache_write_1h INT, "
+                 "usd REAL", ("message_id",)),
     "tools": ("path TEXT, tool_use_id TEXT, ts REAL, day TEXT, week TEXT, name TEXT, exe TEXT, model TEXT, "
-              "is_error INT, is_background INT, is_decision INT, human_approved INT, duration REAL", ("tool_use_id",)),
-    "prompts": ("path TEXT, uuid TEXT, ts REAL, day TEXT, week TEXT, claude_s REAL, api_s REAL", ("uuid",)),
-    "busy": ("path TEXT, prompt_key TEXT, day TEXT, week TEXT, claude_s REAL, api_s REAL", ("prompt_key", "day")),
+              "is_error INT, is_background INT, is_decision INT, human_approved INT, duration REAL, turn TEXT",
+              ("tool_use_id",)),
+    "turns": ("path TEXT, uuid TEXT, ts REAL, day TEXT, week TEXT, origin TEXT, claude_s REAL, api_s REAL, "
+              "cc_turn_s REAL", ("uuid",)),
+    "busy": ("path TEXT, turn TEXT, day TEXT, week TEXT, hour INT, claude_s REAL, api_s REAL", ("turn", "day", "hour")),
 }
 
 SCHEMA = """
@@ -37,8 +40,8 @@ CREATE TABLE IF NOT EXISTS threads(
   path TEXT PRIMARY KEY, host TEXT, profile TEXT, project TEXT, cwd TEXT, session_id TEXT, agent_id TEXT,
   is_subagent INT, agent_type TEXT, spawn_depth INT, parent_tool_use_id TEXT, description TEXT,
   first_ts REAL, last_ts REAL, title TEXT, cc_version TEXT, branch TEXT, entrypoint TEXT, account TEXT,
-  model TEXT, n_prompts INT, n_compactions INT, cost_usd REAL, cost_state TEXT,
-  is_fork INT, background INT, spans TEXT, parent_path TEXT);
+  model TEXT, n_prompts INT, n_turns INT, n_compactions INT, cost_usd REAL, cost_state TEXT,
+  is_fork INT, background INT, spans TEXT, parent_path TEXT, root_turn TEXT);
 CREATE INDEX IF NOT EXISTS threads_session ON threads(host, profile, session_id);
 """ + "".join(f"""
 CREATE TABLE IF NOT EXISTS {t}({cols}, PRIMARY KEY(path, {', '.join(key)}));
@@ -51,10 +54,16 @@ CREATE INDEX IF NOT EXISTS u_{t}_day ON u_{t}(day);
 CREATE TABLE IF NOT EXISTS thread_stats(
   path TEXT PRIMARY KEY, api_calls INT, input INT, output INT, thinking INT, cache_read INT, cache_write INT,
   tool_calls INT, tool_errors INT, agent_calls INT, claude_s REAL, api_s REAL, usd REAL);
+-- Per main-thread turn: its own Claude time plus the subagents, tokens and tools it led to.
+CREATE TABLE IF NOT EXISTS turn_stats(
+  uuid TEXT PRIMARY KEY, path TEXT, host TEXT, profile TEXT, session_id TEXT, ts REAL, day TEXT, origin TEXT,
+  claude_s REAL, api_s REAL, cc_turn_s REAL, agent_s REAL, subagents INT, tool_calls INT, usd REAL);
+CREATE INDEX IF NOT EXISTS turn_stats_day ON turn_stats(day);
+CREATE INDEX IF NOT EXISTS turn_stats_session ON turn_stats(host, profile, session_id);
 -- One row per main session with its subagents folded in; rebuilt only when one of its files changes.
 CREATE TABLE IF NOT EXISTS sessions(
   host TEXT, profile TEXT, session_id TEXT, path TEXT, project TEXT, cwd TEXT, title TEXT, model TEXT,
-  cc_version TEXT, branch TEXT, first_ts REAL, last_ts REAL, first_day TEXT, last_day TEXT, prompts INT,
+  cc_version TEXT, branch TEXT, first_ts REAL, last_ts REAL, first_day TEXT, last_day TEXT, prompts INT, turns INT,
   compactions INT, cost_usd REAL, subagents INT, agent_types TEXT, depth_counts TEXT, forks INT,
   background_agents INT, max_spawn_depth INT, peak_concurrent_subagents INT, api_calls INT, tool_calls INT,
   tool_errors INT, input INT, output INT, thinking INT, cache_read INT, cache_write INT,
@@ -62,7 +71,7 @@ CREATE TABLE IF NOT EXISTS sessions(
 CREATE INDEX IF NOT EXISTS sessions_last ON sessions(last_ts);
 """
 
-_ROW_TABLES = ("threads", "messages", "tools", "prompts", "busy")
+_ROW_TABLES = ("threads", "messages", "tools", "turns", "busy")
 
 
 def connect(db_path: str, readonly: bool = False) -> sqlite3.Connection:
@@ -126,7 +135,7 @@ def _write(conn: sqlite3.Connection, rel: str, parsed: Parsed | None):
         m["usd"] = _usd(m)
     th = {"path": rel, **parsed.thread}
     conn.execute(f"INSERT INTO threads({','.join(th)}) VALUES({','.join('?' * len(th))})", list(th.values()))
-    for table, rows in (("messages", parsed.messages), ("tools", parsed.tools), ("prompts", parsed.prompts), ("busy", parsed.busy)):
+    for table, rows in (("messages", parsed.messages), ("tools", parsed.tools), ("turns", parsed.turns), ("busy", parsed.busy)):
         if not rows:
             continue
         cols = ["path", "week", *rows[0].keys()]
@@ -190,10 +199,12 @@ def _session_of(rel: str) -> tuple[str, str, str]:
 
 
 def rollup_session(conn: sqlite3.Connection, host: str, profile: str, session_id: str, tz: ZoneInfo):
-    """Rebuild one session's thread_stats, subagent parents and projects, and sessions row from the stored rows."""
+    """Rebuild one session's thread_stats, subagent parents, root turns and projects, turn_stats and sessions row
+    from the stored rows."""
     threads = conn.execute("SELECT * FROM threads WHERE host = ? AND profile = ? AND session_id = ?",
                            (host, profile, session_id)).fetchall()
     conn.execute("DELETE FROM sessions WHERE host = ? AND profile = ? AND session_id = ?", (host, profile, session_id))
+    conn.execute("DELETE FROM turn_stats WHERE host = ? AND profile = ? AND session_id = ?", (host, profile, session_id))
     if not threads:
         return
     paths = [t["path"] for t in threads]
@@ -214,14 +225,25 @@ def rollup_session(conn: sqlite3.Connection, host: str, profile: str, session_id
         conn.execute(f"INSERT OR REPLACE INTO thread_stats(path, {', '.join(st)}) VALUES(?{',?' * len(st)})", [p, *st.values()])
 
     # A subagent's parent is the thread whose Agent call spawned it: the main thread or another subagent.
+    # Its root turn is the main-thread turn that call (or its parent's) was made in.
     subs = [t for t in threads if t["is_subagent"]]
+    spawn: dict[str, tuple[str | None, str | None]] = {}
     for s in subs:
-        parent = None
+        row = None
         if s["parent_tool_use_id"]:
-            row = conn.execute(f"SELECT path FROM tools WHERE tool_use_id = ? AND path IN ({q}) ORDER BY length(path), path LIMIT 1",
-                               [s["parent_tool_use_id"], *paths]).fetchone()
-            parent = row[0] if row else None
-        conn.execute("UPDATE threads SET parent_path = ? WHERE path = ?", (parent, s["path"]))
+            row = conn.execute(f"SELECT path, turn FROM tools WHERE tool_use_id = ? AND path IN ({q}) "
+                               "ORDER BY length(path), path LIMIT 1", [s["parent_tool_use_id"], *paths]).fetchone()
+        spawn[s["path"]] = (row[0], row[1]) if row else (None, None)
+    roots: dict[str, str | None] = {}
+
+    def root_of(path, seen=()):
+        if path not in roots:
+            parent, turn = spawn.get(path, (None, None))
+            roots[path] = turn or (root_of(parent, (*seen, path)) if parent in spawn and parent not in seen else None)
+        return roots[path]
+    for s in subs:
+        conn.execute("UPDATE threads SET parent_path = ?, root_turn = ? WHERE path = ?",
+                     (spawn[s["path"]][0], root_of(s["path"]), s["path"]))
 
     main = next((t for t in threads if not t["is_subagent"]), None)
     if main is None:
@@ -245,7 +267,7 @@ def rollup_session(conn: sqlite3.Connection, host: str, profile: str, session_id
         "branch": main["branch"], "first_ts": main["first_ts"], "last_ts": main["last_ts"],
         "first_day": local_day(main["first_ts"], tz) if main["first_ts"] else None,
         "last_day": local_day(main["last_ts"], tz) if main["last_ts"] else None,
-        "prompts": main["n_prompts"], "compactions": main["n_compactions"], "cost_usd": main["cost_usd"],
+        "prompts": main["n_prompts"], "turns": main["n_turns"], "compactions": main["n_compactions"], "cost_usd": main["cost_usd"],
         "subagents": len(subs), "agent_types": json.dumps(types), "depth_counts": json.dumps(depths),
         "forks": sum(s["is_fork"] or 0 for s in subs), "background_agents": sum(s["background"] or 0 for s in subs),
         "max_spawn_depth": max((s["spawn_depth"] or 1 for s in subs), default=0),
@@ -254,6 +276,36 @@ def rollup_session(conn: sqlite3.Connection, host: str, profile: str, session_id
         "agent_s": sum(stats[s["path"]]["claude_s"] for s in subs),
     }
     conn.execute(f"INSERT INTO sessions({','.join(row)}) VALUES({','.join('?' * len(row))})", list(row.values()))
+    _rollup_turns(conn, main["path"], [s["path"] for s in subs], roots, (host, profile, session_id))
+
+
+def _rollup_turns(conn, main_path: str, sub_paths: list[str], roots: dict, key: tuple):
+    """turn_stats for one session: each main-thread turn with the subagents, tokens and tool calls it led to."""
+    turns = {r["uuid"]: dict(r) for r in conn.execute(
+        "SELECT uuid, ts, day, origin, claude_s, api_s, cc_turn_s FROM u_turns WHERE path = ?", (main_path,))}
+    if not turns:
+        return
+    for t in turns.values():
+        t.update(agent_s=0.0, subagents=0, tool_calls=0, usd=0.0)
+    # Records carry their turn in the main thread; a subagent's records belong to its root turn.
+    turn_of = {p: roots.get(p) for p in sub_paths}
+    q = ",".join("?" * (len(sub_paths) + 1))
+    paths = [main_path, *sub_paths]
+    for p in sub_paths:
+        if turn_of[p] in turns:
+            turns[turn_of[p]]["subagents"] += 1
+    for r in conn.execute(f"SELECT path, SUM(claude_s) c FROM u_busy WHERE path IN ({q}) AND path != ? GROUP BY path",
+                          [*paths, main_path]):
+        if turn_of.get(r["path"]) in turns:
+            turns[turn_of[r["path"]]]["agent_s"] += r["c"] or 0.0
+    for table, col, agg in (("u_messages", "usd", "SUM(usd)"), ("u_tools", "tool_calls", "COUNT(*)")):
+        for r in conn.execute(f"SELECT path, turn, {agg} v FROM {table} WHERE path IN ({q}) GROUP BY path, turn", paths):
+            t = r["turn"] if r["path"] == main_path else turn_of.get(r["path"])
+            if t in turns:
+                turns[t][col] += r["v"] or 0
+    for uuid, t in turns.items():
+        row = {"uuid": uuid, "path": main_path, "host": key[0], "profile": key[1], "session_id": key[2], **t}
+        conn.execute(f"INSERT OR REPLACE INTO turn_stats({','.join(row)}) VALUES({','.join('?' * len(row))})", list(row.values()))
 
 
 def refresh(conn: sqlite3.Connection, archive: str, settings: ParseSettings, full: bool = False, log=None) -> dict:

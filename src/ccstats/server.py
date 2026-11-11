@@ -180,9 +180,13 @@ def _filter(q: dict, tz: ZoneInfo) -> metrics.Filter:
 
 ENDPOINTS = {
     "/api/health": "server version, last refresh",
-    "/api/summary": "per-bucket stats incl. estimated cost; group=day|week|month|total, by=host|profile|project|model",
+    "/api/summary": "per-bucket stats incl. estimated cost; group=day|week|month|total, by=host|profile|project|model|origin",
     "/api/tools": "tool calls by name and Bash executable; top=N",
-    "/api/models": "tokens and estimated cost (usd) by model",
+    "/api/cost": "tokens and estimated cost (usd) by=model|effort|skill|origin",
+    "/api/models": "tokens and estimated cost (usd) by model; same as /api/cost?by=model",
+    "/api/turns": "main-thread turns with what each led to; limit=N, sort=claude|agent|cost|timer|recent, origin=NAME|autonomous",
+    "/api/heatmap": "Claude and agent time, turns and prompts by local weekday and hour",
+    "/api/timecheck": "Claude time per turn next to Claude Code's own turn timer",
     "/api/sessions": "main sessions with subagents folded in; limit=N, sort=recent|subagents|claude|agent|output|cost",
     "/api/session": "one session's agent tree, per-thread stats and activity spans; host, profile, id",
     "/api/dimensions": "values for host/profile/project/model filters",
@@ -296,6 +300,14 @@ class Handler(BaseHTTPRequestHandler):
             return metrics.tools(conn, f, int(one("top", 25)))
         if path == "/api/models":
             return metrics.models(conn, f)
+        if path == "/api/cost":
+            return metrics.cost(conn, f, one("by", "model"))
+        if path == "/api/turns":
+            return metrics.turns(conn, f, min(int(one("limit", 50)), 1000), one("sort", "claude"), one("origin"))
+        if path == "/api/heatmap":
+            return metrics.heatmap(conn, f)
+        if path == "/api/timecheck":
+            return metrics.timecheck(conn, f)
         if path == "/api/sessions":
             return metrics.sessions(conn, f, min(int(one("limit", 100)), 1000), one("sort", "recent"))
         if path == "/api/session":

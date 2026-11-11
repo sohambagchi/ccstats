@@ -16,9 +16,11 @@ Console: https://claude.ai/artifact/SfziVxpWd83cbuxQEFcy1c
 - [2026-11-09-1945-precomputed-session-rollups](adr/2026-11-09-1945-precomputed-session-rollups.md) — per-session numbers computed once per transcript change; API answers cached by data version
 - [2026-11-09-2016-estimated-cost-at-list-prices](adr/2026-11-09-2016-estimated-cost-at-list-prices.md) — dollar estimate per response from a local price table
 - [2026-11-09-2050-subagents-in-session-project](adr/2026-11-09-2050-subagents-in-session-project.md) — a subagent's project is its session's
+- [2026-11-10-2227-turns-partition-the-work](adr/2026-11-10-2227-turns-partition-the-work.md) — every turn, not just human prompts, partitions the work; subagents belong to their spawning turn
 
 ## Changes
 
+- [2026-11-10-2227-turns-in-data-and-api](changelog/2026-11-10-2227-turns-in-data-and-api.md) — turns with origins, effort and skill; turns, heatmap, timecheck and cost endpoints
 - [2026-11-10-0051-api-tab](changelog/2026-11-10-0051-api-tab.md) — API reference tab in the dashboard
 - [2026-11-10-0051-query-client](changelog/2026-11-10-0051-query-client.md) — `ccstats-query`, a Python client for the API
 - [2026-11-09-2055-hourly-push-schedule](changelog/2026-11-09-2055-hourly-push-schedule.md) — push timers run hourly

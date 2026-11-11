@@ -23,7 +23,7 @@ server's time zone (`timezone` in `/api/health`). Answers carry
 
 ## Filters
 
-Every stats endpoint (summary, models, tools, sessions) takes the same filters. All are
+Every stats endpoint (summary, cost, tools, turns, heatmap, timecheck, sessions) takes the same filters. All are
 optional; without a date filter the whole archive is covered.
 
 | Parameter | Value | Meaning |
@@ -34,7 +34,7 @@ optional; without a date filter the whole archive is covered.
 | `host` | name | Machine the transcripts came from, e.g. `spore`. |
 | `profile` | name | Claude Code config dir on that host, e.g. `claude` for `~/.claude`. |
 | `project` | name | Project (working directory name). Subagents count toward their session's project. |
-| `model` | model id | Restricts tokens, cost and tool calls to responses from that model. Prompts, time and session counts are not split by model. |
+| `model` | model id | Restricts tokens, cost and tool calls to responses from that model. Turns, prompts, time and session counts are not split by model. |
 
 Valid values for `host`, `profile`, `project` and `model` come from `/api/dimensions`. A
 malformed date is a 400.
@@ -46,7 +46,7 @@ malformed date is a 400.
 Stats per time bucket, optionally split by one dimension.
 
 - `group` = `day` (default), `week` (ISO week, `2026-W45`), `month` (`2026-11`) or `total`
-- `by` = `host`, `profile`, `project` or `model`; each row then has that key. With `by=model` only token, cost and tool fields are filled.
+- `by` = `host`, `profile`, `project`, `model` or `origin`; each row then has that key. With `by=model` only token, cost and tool fields are filled. `by=origin` splits by who started the turn the work belongs to (see Units); subagents count toward the turn that spawned them, and work no turn can be found for is `unknown`.
 - Plus the filters.
 
 ```sh
@@ -58,8 +58,8 @@ Answer: `{"group", "by", "filter", "rows": [...]}`, rows sorted by bucket. Each 
 | Field | Meaning |
 |---|---|
 | `bucket` | Day, week, month or `"total"`. |
-| `sessions` | Main sessions with a response or prompt in the bucket. |
-| `prompts` | Human prompts. |
+| `sessions` | Main sessions with a response or turn in the bucket. |
+| `turns`, `prompts` | Turns started, and the human prompts among them. |
 | `subagents`, `sessions_with_subagents`, `agent_types` | Subagents started, sessions that started any, and a count per agent type. |
 | `max_spawn_depth`, `mean_spawn_depth`, `peak_concurrent_subagents` | How deep subagents nested and how many ran at once. |
 | `claude_s`, `api_s` | Claude time and its API-only part, main threads, in seconds. |
@@ -69,16 +69,27 @@ Answer: `{"group", "by", "filter", "rows": [...]}`, rows sorted by bucket. Each 
 | `cost` | `{"main", "sub", "total"}`, estimated USD. |
 | `tool_calls`, `tool_calls_sub`, `tool_errors`, `tool_background` | All tool calls, those made by subagents, those that errored, those run in the background. |
 
+### GET /api/cost
+
+Tokens and estimated cost split one way, most expensive first. Filters apply.
+
+- `by` = `model` (default), `effort` (the effort level each response was made at, null where Claude Code recorded none), `skill` (the skill in effect, null for none) or `origin` (who started the turn)
+
+```sh
+curl -s 'http://spore:8420/api/cost?by=skill&days=30'
+```
+
+Rows: the `by` field, `api_calls`, `api_calls_sub` (those from subagents), `input`, `output`,
+`thinking`, `cache_read`, `cache_write`, `usd`; with `by=model` also `priced` (false when the
+model isn't in the price table, so `usd` is 0).
+
 ### GET /api/models
 
-Tokens and estimated cost per model, most expensive first. Filters apply.
+The same as `/api/cost?by=model`, kept for older clients.
 
 ```sh
 curl -s 'http://spore:8420/api/models?days=30'
 ```
-
-Rows: `model`, `api_calls`, `input`, `output`, `thinking`, `cache_read`, `cache_write`, `usd`,
-`priced` (false when the model isn't in the price table, so `usd` is 0).
 
 ### GET /api/tools
 
@@ -91,6 +102,52 @@ curl -s 'http://spore:8420/api/tools?days=7&top=10'
 
 Answer: `{"by_name": [{name, calls, errors, background, in_subagents, seconds}], "bash": [{exe, calls, errors, background}]}`.
 `seconds` is wall time from call to result.
+
+### GET /api/turns
+
+Main-thread turns started in the range, each with everything it led to.
+
+- `sort` = `claude` (default), `agent`, `cost`, `timer` or `recent`
+- `origin` = one origin (`human`, `task-notification`, ...) or `autonomous` (every origin but `human`)
+- `limit` = rows, default 50, at most 1000
+- Plus the filters, except `model`.
+
+```sh
+curl -s 'http://spore:8420/api/turns?days=7&sort=agent&limit=5'
+```
+
+Rows: `uuid`, `host`, `profile`, `session_id`, `project`, `title` (the session's), `ts`, `day`,
+`origin`, `claude_s`, `api_s`, `agent_s` and `subagents` (the subagents it spawned, nested ones
+included), `tool_calls` and `usd` (its own and its subagents'), `cc_turn_s` (Claude Code's own
+timer for the turn, null when it recorded none).
+
+### GET /api/heatmap
+
+When work happens: per local weekday and hour, Claude time, agent time, turns started and
+the human prompts among them. Filters apply, except `model`.
+
+```sh
+curl -s 'http://spore:8420/api/heatmap?days=28'
+```
+
+Answer: `{"cells": [{weekday, hour, claude_s, agent_s, turns, prompts}], "weekday_counts": [...]}`.
+`weekday` is 0 for Monday to 6 for Sunday; empty cells are left out. `weekday_counts` says how
+many Mondays to Sundays the range covers, for averages.
+
+### GET /api/timecheck
+
+Claude time per turn next to Claude Code's own turn timer (`system/turn_duration`). The timer
+runs from the prompt to control returning and includes waits for a human that Claude time
+leaves out, so ratios at or below 1 are expected; many far above 1 would point at a Claude
+time bug. Filters apply, except `model`.
+
+```sh
+curl -s 'http://spore:8420/api/timecheck?days=30'
+```
+
+Answer: `turns` (in range), `timed` (those with a timer), `claude_s` and `timer_s` (summed over
+the timed turns), `ratio_p10`, `ratio_median`, `ratio_p90` (Claude time ÷ timer per turn),
+`within_10pct`, `over_10pct` (turn counts), `points` (`[[timer_s, claude_s, origin], ...]`).
 
 ### GET /api/sessions
 
@@ -105,7 +162,7 @@ curl -s 'http://spore:8420/api/sessions?days=7&sort=subagents&limit=5'
 ```
 
 Rows: `host`, `profile`, `session_id`, `project`, `cwd`, `title`, `model`, `cc_version`,
-`branch`, `first_ts`, `last_ts`, `first_day`, `last_day`, `prompts`, `compactions`,
+`branch`, `first_ts`, `last_ts`, `first_day`, `last_day`, `prompts`, `turns`, `compactions`,
 `subagents`, `agent_types`, `depth_counts`, `forks`, `background_agents`, `max_spawn_depth`,
 `peak_concurrent_subagents`, `api_calls`, `tool_calls`, `tool_errors`, `claude_s`, `api_s`,
 `agent_s`, `usd`, `tokens` (`input`, `output`, `thinking`, `cache_read`, `cache_write`),
@@ -114,20 +171,21 @@ Rows: `host`, `profile`, `session_id`, `project`, `cwd`, `title`, `model`, `cc_v
 ### GET /api/session
 
 One session in full: its row as above, every thread (main and subagents) with stats and busy
-spans, and its prompts. `host`, `profile` and `id` (the `session_id`) are required; an unknown
+spans, and its turns. `host`, `profile` and `id` (the `session_id`) are required; an unknown
 session is a 404.
 
 ```sh
 curl -s 'http://spore:8420/api/session?host=spore&profile=claude&id=SESSION_ID'
 ```
 
-Answer: `{"session", "threads", "prompts"}`. Each thread has `id` (`"main"` or the agent id),
+Answer: `{"session", "threads", "turns", "prompts"}`. Each thread has `id` (`"main"` or the agent id),
 `parent` (null for main), `is_subagent`, `agent_type`, `description`, `spawn_depth`,
 `is_fork`, `background`, `model`, `first_ts`, `last_ts`, `spans` (`[[start, end], ...]` when
 it was busy), and `api_calls`, `input`, `output`, `thinking`, `cache_read`, `cache_write`,
 `tool_calls`, `tool_errors`, `agent_calls`, `claude_s`, `api_s`, `usd`. Build the tree by
-following `parent`. `prompts` is `[{ts, claude_s}]`: each human prompt and the Claude time it
-led to.
+following `parent`. `turns` is `[{uuid, ts, origin, claude_s, api_s, agent_s, cc_turn_s,
+subagents, tool_calls, usd}]`, as in `/api/turns`; `prompts` is `[{ts, claude_s}]` for the human
+ones.
 
 ### GET /api/dimensions
 
@@ -175,6 +233,7 @@ curl -s -X POST 'http://spore:8420/api/refresh'
 
 - Fields ending in `_s` and `seconds` are seconds. `*_ts` and span ends are Unix epoch seconds. `*_day` and buckets are local to the server's time zone.
 - **Claude time** (`claude_s`) is the union of model-response and tool-run intervals in main threads, minus waits for a human; a tool call a human had to approve counts for at most 10 minutes (the hub's `approval_cap_minutes`). **Agent time** (`agent_s`) is the same per subagent, summed, so it can exceed wall time when agents run in parallel. See [2026-11-07-0159-claude-time-definition](../adr/2026-11-07-0159-claude-time-definition.md).
+- A **turn** starts at each user record Claude Code marks with an origin: `human` (a typed or queued prompt), `task-notification` (a background agent or command finished), `peer` (a message from another Claude session), `scheduled` (a scheduled wakeup or routine), `auto-continuation` (resumed after a usage limit) or `coordinator`. Time, responses and tool calls belong to the turn they follow; a subagent's belong to the turn whose `Agent` call spawned it. See [2026-11-10-2227-turns-partition-the-work](../adr/2026-11-10-2227-turns-partition-the-work.md).
 - `usd` and `cost` are estimates: tokens priced at API list rates, not what a subscription bills. See [2026-11-09-2016-estimated-cost-at-list-prices](../adr/2026-11-09-2016-estimated-cost-at-list-prices.md).
 - Token counts are as the API reported them; `thinking` is part of `output`.
 
@@ -201,6 +260,10 @@ ccstats-query summary --days 28 --group week --by host
 ccstats-query sessions --days 3 --sort cost --limit 10
 ccstats-query session spore claude <session-id>     # agent tree
 ccstats-query models --days 30 --project ccstats
+ccstats-query cost --days 30 --by skill             # or effort, origin
+ccstats-query turns --days 7 --sort agent --origin autonomous
+ccstats-query heatmap --days 28
+ccstats-query timecheck --days 30
 ccstats-query tools --days 7 --top 10
 ccstats-query hosts                                 # JSON
 ccstats-query refresh

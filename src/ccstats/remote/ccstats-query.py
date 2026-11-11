@@ -20,6 +20,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -139,6 +140,37 @@ def show_models(rows):
             num(r["cache_write"]), usd(r["usd"]) + ("" if r["priced"] else " ?")] for r in rows])
 
 
+def show_cost(rows):
+    by = next((k for k in ("model", "effort", "skill", "origin") if rows and k in rows[0]), "model")
+    table([by, "api calls", "input", "output", "cache read", "cache write", "cost"],
+          [[r[by] or "-", num(r["api_calls"]), num(r["input"]), num(r["output"]), num(r["cache_read"]),
+            num(r["cache_write"]), usd(r["usd"]) + ("" if r.get("priced", True) else " ?")] for r in rows])
+
+
+def show_turns(rows):
+    table(["started", "who", "project", "title", "claude", "agent", "subagents", "timer", "cost"],
+          [[time.strftime("%m-%d %H:%M", time.localtime(r["ts"])), r["origin"], r["project"] or "-", (r["title"] or "")[:36],
+            dur(r["claude_s"]), dur(r["agent_s"]), r["subagents"], dur(r["cc_turn_s"]) if r["cc_turn_s"] else "-",
+            usd(r["usd"])] for r in rows], left=4)
+
+
+def show_timecheck(d):
+    print(f"{d['timed']} of {d['turns']} turns carry Claude Code's turn timer")
+    if d["timed"]:
+        print(f"Claude time {dur(d['claude_s'])} vs timer {dur(d['timer_s'])} over those turns")
+        print(f"Claude time / timer per turn: p10 {d['ratio_p10']:.2f}, median {d['ratio_median']:.2f}, p90 {d['ratio_p90']:.2f}")
+        print(f"within 10%: {d['within_10pct']}, Claude time over the timer by more than 10%: {d['over_10pct']}")
+
+
+def show_heatmap(d):
+    grid = {(c["weekday"], c["hour"]): c["claude_s"] + c["agent_s"] for c in d["cells"]}
+    top = max(grid.values(), default=0) or 1
+    print("Claude + agent time by local hour (darker is more; peak " + dur(top) + ")")
+    print("     " + "".join(f"{h:<3d}" if h % 3 == 0 else "   " for h in range(24)))
+    for wd, name in enumerate(("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")):
+        print(f"{name}  " + "".join(" .:-=+*#%@"[min(9, round(9 * grid.get((wd, h), 0) / top))] * 2 + " " for h in range(24)))
+
+
 def show_tools(d):
     table(["tool", "calls", "errors", "background", "in subagents", "time"],
           [[r["name"], r["calls"], r["errors"], r["background"], r["in_subagents"], dur(r["seconds"])] for r in d["by_name"]])
@@ -184,8 +216,16 @@ def main(argv=None):
     sub.add_parser("endpoints", help="what the server says it serves")
     s = sub.add_parser("summary", parents=[filters], help="stats per day/week/month or in total")
     s.add_argument("--group", choices=["day", "week", "month", "total"], default="day")
-    s.add_argument("--by", choices=["host", "profile", "project", "model"])
+    s.add_argument("--by", choices=["host", "profile", "project", "model", "origin"])
     sub.add_parser("models", parents=[filters], help="tokens and estimated cost per model")
+    co = sub.add_parser("cost", parents=[filters], help="tokens and estimated cost per model, effort, skill or turn origin")
+    co.add_argument("--by", choices=["model", "effort", "skill", "origin"], default="model")
+    tu = sub.add_parser("turns", parents=[filters], help="turns with the subagents, tools and cost each led to")
+    tu.add_argument("--limit", type=int, default=20)
+    tu.add_argument("--sort", choices=["claude", "agent", "cost", "timer", "recent"], default="claude")
+    tu.add_argument("--origin", help="human, task-notification, peer, ... or autonomous (anything but human)")
+    sub.add_parser("heatmap", parents=[filters], help="when work happens, by weekday and hour")
+    sub.add_parser("timecheck", parents=[filters], help="Claude time per turn against Claude Code's own turn timer")
     t = sub.add_parser("tools", parents=[filters], help="tool calls by name and Bash program")
     t.add_argument("--top", type=int, default=25)
     ss = sub.add_parser("sessions", parents=[filters], help="sessions with their subagents folded in")
@@ -219,6 +259,12 @@ def main(argv=None):
             out, show = c.get("/api/tools", top=a.top, **f), show_tools
         elif a.cmd == "models":
             out, show = c.get("/api/models", **f), show_models
+        elif a.cmd == "cost":
+            out, show = c.get("/api/cost", by=a.by, **f), show_cost
+        elif a.cmd == "turns":
+            out, show = c.get("/api/turns", limit=a.limit, sort=a.sort, origin=a.origin, **f), show_turns
+        elif a.cmd in ("heatmap", "timecheck"):
+            out, show = c.get("/api/" + a.cmd, **f), {"heatmap": show_heatmap, "timecheck": show_timecheck}[a.cmd]
         elif a.cmd == "sessions":
             out, show = c.get("/api/sessions", limit=a.limit, sort=a.sort, **f), show_sessions
         elif a.cmd == "session":

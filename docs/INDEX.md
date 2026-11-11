@@ -20,6 +20,7 @@ Console: https://claude.ai/artifact/SfziVxpWd83cbuxQEFcy1c
 
 ## Changes
 
+- [2026-11-10-2240-turns-tab](changelog/2026-11-10-2240-turns-tab.md) — Turns tab: who starts the work, when, longest turns, timer check; cost by effort and skill
 - [2026-11-10-2227-turns-in-data-and-api](changelog/2026-11-10-2227-turns-in-data-and-api.md) — turns with origins, effort and skill; turns, heatmap, timecheck and cost endpoints
 - [2026-11-10-0051-api-tab](changelog/2026-11-10-0051-api-tab.md) — API reference tab in the dashboard
 - [2026-11-10-0051-query-client](changelog/2026-11-10-0051-query-client.md) — `ccstats-query`, a Python client for the API

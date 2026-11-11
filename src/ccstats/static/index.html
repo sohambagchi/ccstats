@@ -9,21 +9,21 @@
   color-scheme: light;
   --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
   --grid: #e1e0d9; --axis: #c3c2b7; --ring: rgba(11,11,11,0.10);
-  --s1: #2a78d6; --s2: #eb6834; --critical: #d03b3b;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --critical: #d03b3b;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
     --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
     --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10);
-    --s1: #3987e5; --s2: #d95926;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
   }
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
   --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
   --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10);
-  --s1: #3987e5; --s2: #d95926;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -112,6 +112,9 @@ tr.link { cursor: pointer; } tr.link:hover td, tr.link:focus td { background: va
 .hbar .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-2); }
 .hbar .num { text-align: right; font-variant-numeric: tabular-nums; }
 .hbar:focus { outline: none; } .hbar:focus .name { color: var(--ink); }
+.heat rect.cell:hover, .heat rect.cell:focus { stroke: var(--ink); stroke-width: 1.5; outline: none; }
+.scale { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); margin-top: 6px; }
+.scale i { display: inline-block; width: 14px; height: 10px; border-radius: 2px; }
 
 /* API tab: reference text */
 .doc { max-width: 920px; }
@@ -171,6 +174,7 @@ td.tree .t { color: var(--muted); }
         <a href="#cost" data-tab="cost">Cost &amp; tokens</a>
         <a href="#tools" data-tab="tools">Tools</a>
         <a href="#agents" data-tab="agents">Agents</a>
+        <a href="#turns" data-tab="turns">Turns</a>
         <a href="#sessions" data-tab="sessions">Sessions</a>
         <a href="#hosts" data-tab="hosts">Hosts</a>
         <a href="#api" data-tab="api">API</a>
@@ -246,6 +250,12 @@ td.tree .t { color: var(--muted); }
         <details><summary>Table</summary><div class="scroll" id="c-table-models"></div></details></div>
       <div class="card"><h2>Cost by project</h2><div class="sub" id="c-projects-sub"></div><div id="c-projects"></div></div>
     </div>
+    <div class="grid2">
+      <div class="card"><h2>Cost by effort level</h2><div class="sub" id="c-effort-sub"></div><div id="c-effort"></div>
+        <details><summary>Table</summary><div class="scroll" id="c-table-effort"></div></details></div>
+      <div class="card"><h2>Cost by skill</h2><div class="sub" id="c-skills-sub"></div><div id="c-skills"></div>
+        <details><summary>Table</summary><div class="scroll" id="c-table-skills"></div></details></div>
+    </div>
   </section>
 
   <section class="view" id="view-tools" hidden>
@@ -263,6 +273,44 @@ td.tree .t { color: var(--muted); }
     <div class="grid2">
       <div class="card"><h2>Subagents by type</h2><div class="sub" id="a-types-sub"></div><div id="a-types"></div></div>
       <div class="card"><h2>Sessions that spawned the most</h2><div class="sub">Click a row for its agent tree and timeline</div><div class="scroll" id="a-spawners"></div></div>
+    </div>
+  </section>
+
+  <!-- Turns: what starts the work, when it happens, the longest turns, and a check on Claude time -->
+  <section class="view" id="view-turns" hidden>
+    <div class="tiles" id="u-tiles"></div>
+    <div class="card mb">
+      <div class="card-h">
+        <div><h2 id="u-chart-title"></h2><div class="sub">Work belongs to the turn it followed; a subagent's, to the turn that spawned it</div></div>
+        <div class="seg" id="u-metric" role="group" aria-label="Chart metric">
+          <button data-v="claude">Claude time</button><button data-v="agent">Agent time</button><button data-v="cost">Cost</button>
+        </div>
+      </div>
+      <div class="legend" id="u-legend"></div>
+      <div id="u-chart"></div>
+      <details><summary>Table</summary><div class="scroll" id="u-table"></div></details>
+    </div>
+    <div class="grid2">
+      <div class="card">
+        <h2>When the work happens</h2><div class="sub" id="u-heat-sub"></div>
+        <div id="u-heat" class="heat"></div><div class="scale" id="u-heat-scale"></div>
+        <details><summary>Table</summary><div class="scroll" id="u-heat-table"></div></details>
+      </div>
+      <div class="card">
+        <h2>Claude time against Claude Code's turn timer</h2><div class="sub" id="u-check-sub"></div>
+        <div class="legend"><span><i style="background:var(--s1)"></i>Your prompts</span><span><i style="background:var(--s2)"></i>Started without you</span><span><i style="background:var(--axis);height:2px"></i>Equal</span></div>
+        <div id="u-check"></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-h">
+        <div><h2>Longest turns</h2><div class="sub">Each with the subagents, tools and cost it led to; click a row for its session</div></div>
+        <div class="filters" style="padding:0">
+          <div class="seg" id="u-origin" role="group" aria-label="Turns started by"><button data-v="">All</button><button data-v="human">You</button><button data-v="autonomous">Without you</button></div>
+          <div class="seg" id="u-sort" role="group" aria-label="Sort turns by"><button data-v="claude">Claude time</button><button data-v="agent">Agent time</button><button data-v="cost">Cost</button></div>
+        </div>
+      </div>
+      <div class="scroll" id="u-list"></div>
     </div>
   </section>
 
@@ -546,9 +594,14 @@ print(week["claude_s"] / 3600, week["cost"]["total"])</pre>
     <div class="card mb">
       <h2>Timeline</h2>
       <div class="sub" id="s-tl-sub"></div>
-      <div class="legend"><span><i style="background:var(--s1)"></i>Main thread busy</span><span><i style="background:var(--s2)"></i>Subagent busy</span><span><i style="background:var(--s2);opacity:.3"></i>Subagent alive</span><span><i style="background:var(--ink);width:2px"></i>Prompt</span></div>
+      <div class="legend"><span><i style="background:var(--s1)"></i>Main thread busy</span><span><i style="background:var(--s2)"></i>Subagent busy</span><span><i style="background:var(--s2);opacity:.3"></i>Subagent alive</span><span><i style="background:var(--ink);width:2px"></i>Your prompt</span><span><i style="background:var(--muted);width:2px"></i>Turn started without you</span></div>
       <div id="s-axis"></div>
       <div class="tl-scroll" id="s-timeline"></div>
+    </div>
+    <div class="card mb">
+      <h2>Turns</h2>
+      <div class="sub">Each prompt or wake-up, with the subagents, tools and cost it led to</div>
+      <div class="scroll tl-scroll" style="margin-top:8px" id="s-turns"></div>
     </div>
     <div class="card">
       <h2>Agent tree</h2>
@@ -623,7 +676,8 @@ const pref = {
   get(k, d) { try { return localStorage.getItem("ccstats." + k) || d; } catch { return d; } },
   set(k, v) { try { localStorage.setItem("ccstats." + k, v); } catch { /* private mode */ } },
 };
-const view = { metric: pref.get("metric", "time"), sort: "recent", limit: 200, q: "" };
+const view = { metric: pref.get("metric", "time"), sort: "recent", limit: 200, q: "",
+               turnMetric: pref.get("turnMetric", "claude"), turnSort: "claude", turnOrigin: "" };
 
 function readURL() {
   const p = new URLSearchParams(location.search);
@@ -641,6 +695,7 @@ function setFilter(k, v) {
 }
 function syncControls() {
   syncSeg("days", F.days); syncSeg("group", F.group); syncSeg("o-metric", view.metric); syncSeg("sort", view.sort);
+  syncSeg("u-metric", view.turnMetric); syncSeg("u-sort", view.turnSort); syncSeg("u-origin", view.turnOrigin);
   for (const k of DIMS) if ($(k).value !== F[k]) $(k).value = F[k];
   $("clear").hidden = !DIMS.some((k) => F[k]);
 }
@@ -787,6 +842,80 @@ function hbars(container, items, label, value, fmt, extra, opt = {}) {
   }
 }
 
+// Weekday x hour grid, shaded by magnitude toward the surface (one hue, so it reads in both themes).
+const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const DAYS_LONG = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+const shade = (f) => `color-mix(in oklab, var(--s1) ${Math.round(14 + 86 * f)}%, var(--surface))`;
+function heatGrid(container, cells, value, tipRows) {
+  container.replaceChildren();
+  const W = Math.max(container.clientWidth, 300), L = 34, T = 16;
+  const cw = (W - L) / 24, ch = Math.max(14, Math.min(24, cw)), H = T + 7 * ch;
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, height: H, role: "img", "aria-label": "Activity by weekday and hour" });
+  const at = new Map(cells.map((c) => [c.weekday * 24 + c.hour, c]));
+  const max = Math.max(0, ...cells.map(value));
+  for (let h = 0; h < 24; h += 3) {
+    const t = svgEl("text", { x: L + h * cw + 1, y: 11 }); t.textContent = String(h).padStart(2, "0"); svg.append(t);
+  }
+  DAYS.forEach((name, wd) => {
+    const t = svgEl("text", { x: L - 6, y: T + wd * ch + ch / 2 + 4, "text-anchor": "end" }); t.textContent = name; svg.append(t);
+    for (let h = 0; h < 24; h++) {
+      const c = at.get(wd * 24 + h), v = c ? value(c) : 0;
+      // sqrt keeps quiet hours visible next to the busiest one
+      const r = svgEl("rect", { class: "cell", x: L + h * cw + 1, y: T + wd * ch + 1, width: Math.max(1, cw - 2), height: ch - 2, rx: 2,
+                                fill: v > 0 && max > 0 ? shade(Math.sqrt(v / max)) : "var(--grid)", "fill-opacity": v > 0 ? 1 : 0.45 });
+      const hh = String(h).padStart(2, "0");
+      tipOn(r, `${DAYS_LONG[wd]}, ${hh}:00–${hh}:59`, tipRows(c, wd));
+      svg.append(r);
+    }
+  });
+  container.append(svg);
+  return max;
+}
+
+// Log-log scatter of [x, y, group] points with an equality diagonal; hover picks the nearest point.
+const LOG_TICKS = [1, 10, 60, 600, 3600, 36000, 360000];
+function logScatter(container, pts, color, tip, H = 260) {
+  container.replaceChildren();
+  const W = Math.max(container.clientWidth, 300), L = 48, R = 10, T = 8, B = 34;
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, height: H, role: "img", "aria-label": "Scatter plot" });
+  if (!pts.length) {
+    const t = svgEl("text", { x: W / 2, y: H / 2, "text-anchor": "middle" }); t.textContent = "No timed turns in this range"; svg.append(t);
+    container.append(svg); return;
+  }
+  const lo = 1, hi = Math.max(60, ...pts.map((p) => Math.max(p[0], p[1])));
+  const k = (v) => (Math.log10(Math.max(v, lo)) - Math.log10(lo)) / (Math.log10(hi) - Math.log10(lo));
+  const x = (v) => L + k(v) * (W - L - R), y = (v) => H - B - k(v) * (H - B - T);
+  for (const v of LOG_TICKS.filter((v) => v <= hi)) {
+    svg.append(svgEl("line", { x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: v === lo ? "var(--axis)" : "var(--grid)" }));
+    svg.append(svgEl("line", { x1: x(v), x2: x(v), y1: T, y2: H - B, stroke: v === lo ? "var(--axis)" : "var(--grid)" }));
+    const label = v < 60 ? v + "s" : v < 3600 ? v / 60 + "m" : v / 3600 + "h";
+    const ty = svgEl("text", { x: L - 6, y: y(v) + 4, "text-anchor": "end" }); ty.textContent = label; svg.append(ty);
+    const tx = svgEl("text", { x: x(v), y: H - B + 14, "text-anchor": "middle" }); tx.textContent = label; svg.append(tx);
+  }
+  const xl = svgEl("text", { x: W - R, y: H - 4, "text-anchor": "end" }); xl.textContent = "Claude Code's timer →"; svg.append(xl);
+  const yl = svgEl("text", { x: L + 4, y: T + 10 }); yl.textContent = "↑ Claude time"; svg.append(yl);
+  svg.append(svgEl("line", { x1: x(lo), y1: y(lo), x2: x(hi), y2: y(hi), stroke: "var(--axis)", "stroke-width": 2 }));
+  const placed = pts.map((p) => ({ p, cx: x(p[0]), cy: y(p[1]) }));
+  // The first series color is drawn last, on top.
+  const onTop = (d) => (color(d.p) === "var(--s1)" ? 1 : 0);
+  for (const d of [...placed].sort((a, b) => onTop(a) - onTop(b))) {
+    svg.append(svgEl("circle", { cx: d.cx, cy: d.cy, r: 4, fill: color(d.p), "fill-opacity": 0.7, stroke: "var(--surface)", "stroke-width": 1 }));
+  }
+  const ring = svgEl("circle", { r: 6, fill: "none", stroke: "var(--ink)", "stroke-width": 1.5, visibility: "hidden" });
+  svg.append(ring);
+  svg.addEventListener("pointermove", (ev) => {
+    const box = svg.getBoundingClientRect(), sx = W / box.width;
+    const mx = (ev.clientX - box.left) * sx, my = (ev.clientY - box.top) * sx;
+    let best = null, bd = 144;
+    for (const d of placed) { const dd = (d.cx - mx) ** 2 + (d.cy - my) ** 2; if (dd < bd) { bd = dd; best = d; } }
+    if (!best) { hideTip(); ring.setAttribute("visibility", "hidden"); return; }
+    ring.setAttribute("cx", best.cx); ring.setAttribute("cy", best.cy); ring.setAttribute("visibility", "visible");
+    showTip(ev, ...tip(best.p));
+  });
+  svg.addEventListener("pointerleave", () => { hideTip(); ring.setAttribute("visibility", "hidden"); });
+  container.append(svg);
+}
+
 // ---- Tables: columns as {h, v: row -> raw value, f: (raw, row) -> text, n: numeric} ----
 
 function cmp(a, b) {
@@ -849,6 +978,29 @@ function tile(label, value, note, opt = {}) {
 }
 const totalOf = (total) => total.rows[0] || { tokens: { main: {}, sub: {} }, cost: {}, agent_types: {} };
 
+// Who starts a turn, folded to four series in a fixed color order.
+const ORIGINS = [
+  { key: "human", label: "You", color: "var(--s1)" },
+  { key: "task-notification", label: "Task notifications", color: "var(--s2)" },
+  { key: "peer", label: "Other sessions", color: "var(--s3)" },
+  { key: "other", label: "Scheduled & other", color: "var(--s4)" },
+];
+const ORIGIN_NAMES = { human: "You", "task-notification": "Task notification", peer: "Other session", scheduled: "Scheduled",
+                       "auto-continuation": "Auto-continue", coordinator: "Coordinator", unknown: "Unknown" };
+const originName = (o) => ORIGIN_NAMES[o] || o;
+const originGroup = (o) => (ORIGINS.some((g) => g.key === o) ? o : "other");
+const originColor = (o) => (o === "human" ? "var(--s1)" : "var(--s2)");
+// /api/summary?by=origin rows folded to one row per bucket: {bucket, human: {...}, peer: {...}, ...}.
+function foldOrigins(rows) {
+  const out = new Map(), zero = () => ({ claude_s: 0, agent_s: 0, cost: 0, turns: 0, prompts: 0 });
+  for (const r of rows) {
+    if (!out.has(r.bucket)) out.set(r.bucket, { bucket: r.bucket, ...Object.fromEntries(ORIGINS.map((g) => [g.key, zero()])) });
+    const g = out.get(r.bucket)[originGroup(r.origin)];
+    g.claude_s += r.claude_s; g.agent_s += r.agent_s; g.cost += r.cost.total; g.turns += r.turns; g.prompts += r.prompts;
+  }
+  return [...out.values()];
+}
+
 // ---- Overview --------------------------------------------------------------------------
 
 const METRICS = {
@@ -877,6 +1029,7 @@ async function renderOverview() {
     tile("Claude time", fmtDur(t.claude_s), `${fmtDur(t.api_s)} model in flight · ${fmtDur(t.agent_s)} in subagents`, { hero: true }),
     tile("Estimated cost", fmtUsd(t.cost.total), `${fmtUsd(t.cost.sub)} in subagents`, { href: "#cost" }),
     tile("Sessions", fmtNum(t.sessions), `${fmtNum(t.prompts)} prompts`, { href: "#sessions" }),
+    tile("Turns", fmtNum(t.turns), t.turns ? `${fmtPct(1 - t.prompts / t.turns)} started without you` : "none", { href: "#turns" }),
     tile("Subagents", fmtNum(t.subagents), t.subagents ? `in ${fmtNum(t.sessions_with_subagents)} sessions · peak ${t.peak_concurrent_subagents}` : "none", { href: "#agents" }),
     tile("Tool calls", fmtNum(t.tool_calls), `${fmtNum(t.tool_errors)} errors · ${fmtPct(t.tool_calls ? t.tool_calls_sub / t.tool_calls : null)} from subagents`, { href: "#tools" }),
     tile("Output tokens", fmtNum((tm.output || 0) + (ts.output || 0)), `${fmtNum((tm.thinking || 0) + (ts.thinking || 0))} thinking`, { href: "#cost" }),
@@ -905,9 +1058,9 @@ async function renderOverview() {
 // ---- Cost & tokens ---------------------------------------------------------------------
 
 async function renderCost() {
-  const [series, total, models, projects, health] = await Promise.all([
-    api("/api/summary", { group: F.group }), api("/api/summary", { group: "total" }), api("/api/models"),
-    api("/api/summary", { group: "total", by: "project" }), getHealth(),
+  const [series, total, models, projects, efforts, skills, health] = await Promise.all([
+    api("/api/summary", { group: F.group }), api("/api/summary", { group: "total" }), api("/api/cost", { by: "model" }),
+    api("/api/summary", { group: "total", by: "project" }), api("/api/cost", { by: "effort" }), api("/api/cost", { by: "skill" }), getHealth(),
   ]);
   const t = totalOf(total), tm = t.tokens.main, ts = t.tokens.sub;
   const read = (tm.cache_read || 0) + (ts.cache_read || 0), fresh = (tm.input || 0) + (ts.input || 0) + (tm.cache_write || 0) + (ts.cache_write || 0);
@@ -952,7 +1105,27 @@ async function renderCost() {
     const p = shown[i].project;
     if (i < TOP && p && !F.project) { row.style.cursor = "pointer"; row.addEventListener("click", () => setFilter("project", p)); row.addEventListener("keydown", (ev) => { if (ev.key === "Enter") setFilter("project", p); }); }
   });
+
+  // Effort levels in their own order, unrecorded last; skills by cost, the rest folded.
+  const callTip = (x) => [["API calls", fmtNum(x.api_calls), null], ["Per call", fmtUsd(x.api_calls ? x.usd / x.api_calls : 0), null],
+                          ["Output", fmtNum(x.output), null], ["From subagents", fmtPct(x.api_calls ? x.api_calls_sub / x.api_calls : null), null]];
+  const rank = (e) => { const i = EFFORTS.indexOf(e); return e == null ? 99 : i < 0 ? 50 : i; };
+  const eff = [...efforts].sort((a, b) => rank(a.effort) - rank(b.effort)), all = efforts.reduce((a, x) => a + x.usd, 0);
+  const unrec = efforts.find((x) => x.effort == null);
+  $("c-effort-sub").textContent = "The effort setting each response ran at" + (unrec ? ` · ${fmtPct(unrec.usd / all)} not recorded (older Claude Code)` : "");
+  hbars($("c-effort"), eff, (x) => x.effort || "not recorded", (x) => x.usd, fmtUsd, callTip, { unit: "Cost" });
+  table($("c-table-effort"), [col.text("Effort", (x) => x.effort || "not recorded"), col.int("API calls", (x) => x.api_calls), col.num("Output", (x) => x.output),
+    col.usd("Cost", (x) => x.usd), col.usd("Per call", (x) => (x.api_calls ? x.usd / x.api_calls : null))], eff);
+  const named = skills.filter((x) => x.skill), inSkills = named.reduce((a, x) => a + x.usd, 0), STOP = 12;
+  const shownSkills = named.slice(0, STOP), restSkills = named.slice(STOP);
+  if (restSkills.length) shownSkills.push({ skill: `${restSkills.length} others`, usd: restSkills.reduce((a, x) => a + x.usd, 0),
+    api_calls: restSkills.reduce((a, x) => a + x.api_calls, 0), api_calls_sub: restSkills.reduce((a, x) => a + x.api_calls_sub, 0), output: restSkills.reduce((a, x) => a + x.output, 0) });
+  $("c-skills-sub").textContent = named.length ? `Responses made with a skill in effect: ${fmtUsd(inSkills)}, ${fmtPct(inSkills / all)} of all cost` : "";
+  hbars($("c-skills"), shownSkills, (x) => x.skill, (x) => x.usd, fmtUsd, callTip, { unit: "Cost", empty: "No skill in effect in this range" });
+  table($("c-table-skills"), [col.text("Skill", (x) => x.skill || "none"), col.int("API calls", (x) => x.api_calls), col.num("Output", (x) => x.output),
+    col.usd("Cost", (x) => x.usd), { h: "Share", n: true, v: (x) => (all ? x.usd / all : null), f: fmtPct }], skills, { sortBy: 3 });
 }
+const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 
 // ---- Tools -----------------------------------------------------------------------------
 
@@ -996,6 +1169,74 @@ async function renderAgents() {
   table($("a-spawners"), [col.text("Session", (s) => `${s.project} · ${sessionTitle(s)}`, true), col.int("Subagents", (s) => s.subagents),
     col.int("Peak", (s) => s.peak_concurrent_subagents), col.int("Depth", (s) => s.max_spawn_depth), col.dur("Agent time", "agent_s"),
     col.usd("Cost", (s) => s.usd)], spawners.filter((s) => s.subagents > 0), { link: openSession, sortBy: 1, empty: "None in this range" });
+}
+
+// ---- Turns -----------------------------------------------------------------------------
+
+const TURN_METRICS = {
+  claude: { title: "Claude time", fmt: (m) => fmtDur(m * 60), steps: MIN_STEPS, v: (g) => g.claude_s / 60, cell: fmtDur, raw: (g) => g.claude_s },
+  agent: { title: "Agent time", fmt: (m) => fmtDur(m * 60), steps: MIN_STEPS, v: (g) => g.agent_s / 60, cell: fmtDur, raw: (g) => g.agent_s },
+  cost: { title: "Estimated cost", fmt: fmtUsd, steps: USD_STEPS, v: (g) => g.cost, cell: fmtUsd, raw: (g) => g.cost },
+};
+
+async function renderTurns() {
+  const [series, total, list, longest, heat, check, health] = await Promise.all([
+    api("/api/summary", { group: F.group, by: "origin" }), api("/api/summary", { group: "total", by: "origin" }),
+    api("/api/turns", { limit: 25, sort: view.turnSort, ...(view.turnOrigin ? { origin: view.turnOrigin } : {}) }),
+    api("/api/turns", { limit: 1 }), api("/api/heatmap"), api("/api/timecheck"), getHealth(),
+  ]);
+  const [tot] = foldOrigins(total.rows);
+  const sum = (k) => (tot ? ORIGINS.reduce((a, g) => a + tot[g.key][k], 0) : 0), you = (k) => (tot ? tot.human[k] : 0);
+  const share = (k) => (sum(k) ? you(k) / sum(k) : null), top = longest[0];
+  $("u-tiles").replaceChildren(
+    tile("Turns", fmtNum(sum("turns")), `${fmtNum(you("turns"))} your prompts · ${fmtNum(sum("turns") - you("turns"))} started without you`, { hero: true }),
+    tile("Your share of Claude time", fmtPct(share("claude_s")), `${fmtDur(sum("claude_s") - you("claude_s"))} in turns started without you`),
+    tile("Your share of agent time", fmtPct(share("agent_s")), `${fmtDur(sum("agent_s") - you("agent_s"))} without you`),
+    tile("Your share of cost", fmtPct(share("cost")), `${fmtUsd(sum("cost") - you("cost"))} without you`),
+    tile("Longest turn", top ? fmtDur(top.claude_s) : "-", top ? `${top.project} · ${fmtWhen(top.ts)}` : "", { href: top ? sessionHash(top) : null }),
+    tile("Agrees with Claude Code", check.timed ? fmtPct(check.within_10pct / check.timed) : "-",
+         check.timed ? `of ${fmtNum(check.timed)} timed turns within 10% of its timer` : "no timed turns"),
+  );
+
+  const m = TURN_METRICS[view.turnMetric] || TURN_METRICS.claude, folded = foldOrigins(series.rows);
+  const { buckets, get } = bucketsOf({ rows: folded, group: series.group }, health);
+  $("u-chart-title").textContent = `${m.title} per ${series.group}, by who started the turn`;
+  $("u-legend").replaceChildren(...ORIGINS.map((g) => { const i = el("i"); i.style.background = g.color; return el("span", {}, i, g.label); }));
+  stackedColumns($("u-chart"), buckets, ORIGINS.map((g) => ({ name: g.label, color: g.color, get: get((r) => m.v(r[g.key])) })), m.fmt, m.steps, 220);
+  table($("u-table"), [col.text(series.group, (r) => r.bucket),
+    ...ORIGINS.map((g) => ({ h: g.label, n: true, v: (r) => m.raw(r[g.key]), f: m.cell })),
+    { h: "Total", n: true, v: (r) => ORIGINS.reduce((a, g) => a + m.raw(r[g.key]), 0), f: m.cell },
+    col.int("Turns", (r) => ORIGINS.reduce((a, g) => a + r[g.key].turns, 0))], folded, { empty: "No data in this range" });
+
+  const counts = heat.weekday_counts, weeks = Math.max(...counts);
+  const peak = heatGrid($("u-heat"), heat.cells, (c) => c.claude_s, (c, wd) => [
+    ["Claude time", fmtDur(c?.claude_s), "var(--s1)"], ["Agent time", fmtDur(c?.agent_s), null],
+    ["Turns started", fmtNum(c?.turns), null], ["Your prompts", fmtNum(c?.prompts), null],
+    ...(counts[wd] > 1 ? [[`Claude time per ${DAYS_LONG[wd]}`, fmtDur((c?.claude_s || 0) / counts[wd]), null]] : []),
+  ]);
+  $("u-heat-sub").textContent = `Claude time per local hour (${health.timezone})` + (weeks ? `, summed over ${weeks} week${weeks > 1 ? "s" : ""}` : "");
+  $("u-heat-scale").replaceChildren("Less", ...[0.05, 0.25, 0.5, 0.75, 1].map((f) => { const i = el("i"); i.style.background = shade(Math.sqrt(f)); return i; }),
+    `More · busiest hour ${fmtDur(peak)}`);
+  const days = DAYS.map((name, wd) => {
+    const cs = heat.cells.filter((c) => c.weekday === wd), busiest = cs.reduce((a, c) => (!a || c.claude_s > a.claude_s ? c : a), null);
+    return { name: DAYS_LONG[wd], claude_s: cs.reduce((a, c) => a + c.claude_s, 0), agent_s: cs.reduce((a, c) => a + c.agent_s, 0),
+             turns: cs.reduce((a, c) => a + c.turns, 0), busiest: busiest && busiest.claude_s > 0 ? `${String(busiest.hour).padStart(2, "0")}:00` : "" };
+  });
+  table($("u-heat-table"), [col.text("Day", (r) => r.name), col.dur("Claude time", "claude_s"), col.dur("Agent time", "agent_s"),
+    col.int("Turns", (r) => r.turns), col.text("Busiest hour", (r) => r.busiest)], days, { sort: false });
+
+  $("u-check-sub").textContent = check.timed
+    ? `Each dot is a turn. ${fmtNum(check.timed)} of ${fmtNum(check.turns)} carry Claude Code's own timer; median Claude time is ${fmtPct(check.ratio_median)} of it. `
+      + "Dots below the line are turns where the timer also counted waits for you." : "Claude Code records its timer only in recent versions.";
+  logScatter($("u-check"), check.points, (p) => originColor(p[2]), (p) => [originName(p[2]) + " turn",
+    [["Claude time", fmtDur(p[1]), originColor(p[2])], ["Claude Code's timer", fmtDur(p[0]), null], ["Ratio", fmtPct(p[0] ? p[1] / p[0] : null), null]]]);
+
+  table($("u-list"), [
+    { h: "Started", v: (r) => r.ts, f: fmtWhen, nw: true }, col.text("Who", (r) => originName(r.origin)),
+    col.text("Project", (r) => r.project, true), col.text("Session", (r) => r.title || r.session_id.slice(0, 8), true),
+    col.dur("Claude time", "claude_s"), col.dur("Agent time", "agent_s"), col.int("Subagents", (r) => r.subagents),
+    col.usd("Cost", (r) => r.usd), { h: "Timer", n: true, v: (r) => r.cc_turn_s, f: (x) => (x ? fmtDur(x) : "-") },
+  ], list, { link: openSession, empty: "No turns in this range" });
 }
 
 // ---- Sessions --------------------------------------------------------------------------
@@ -1074,7 +1315,7 @@ function timeScale(threads, prompts, x0, x1) {
     if (t.first_ts != null) iv.push([t.first_ts, t.first_ts + 1]);
     if (t.last_ts != null) iv.push([t.last_ts - 1, t.last_ts]);
   }
-  for (const p of prompts) iv.push([p.ts, p.ts + 1]);
+  for (const p of prompts) iv.push([p.ts, p.ts + 1]);  // turn starts
   iv.sort((a, b) => a[0] - b[0]);
   const segs = [];
   for (const [a, b] of iv) {
@@ -1124,7 +1365,7 @@ function timeline(d, tz) {
   const rows = treeOrder(d.threads);
   const box = $("s-timeline"), W = Math.max(box.clientWidth, 320);
   const LBL = W < 560 ? 110 : 200, X1 = W - 8, LANE = 18, BAR = 10, AX = 22;
-  const sc = timeScale(rows, d.prompts, LBL + 4, X1);
+  const sc = timeScale(rows, d.turns, LBL + 4, X1);
   const H = rows.length * LANE + 4;
 
   const ax = svgEl("svg", { viewBox: `0 0 ${W} ${AX}`, height: AX, preserveAspectRatio: "xMinYMin meet" });
@@ -1152,9 +1393,9 @@ function timeline(d, tz) {
       const a = sc.x(s0), b = Math.max(sc.x(s1), a + 1.5);
       g.append(svgEl("rect", { x: a, y: cy, width: b - a, height: BAR, fill: color }));
     }
-    if (main) for (const p of d.prompts) {
+    if (main) for (const p of d.turns) {
       const xx = sc.x(p.ts);
-      g.append(svgEl("rect", { x: xx - 1, y: y + 1, width: 2, height: LANE - 2, fill: "var(--ink)" }));
+      g.append(svgEl("rect", { x: xx - 1, y: y + 1, width: 2, height: LANE - 2, fill: p.origin === "human" ? "var(--ink)" : "var(--muted)" }));
     }
     const wall = (t.last_ts || 0) - (t.first_ts || 0);
     tipOn(g, name, [
@@ -1163,7 +1404,7 @@ function timeline(d, tz) {
       ["Wall time", fmtDur(wall), null], ["Busy", fmtDur(t.claude_s), null],
       ["Tool calls", fmtNum(t.tool_calls), null], ["Output tokens", fmtNum(t.output), null], ["Est. cost", fmtUsd(t.usd), null],
       ...(t.children ? [["Spawned", String(t.children), null]] : []),
-      ...(main ? [["Prompts", String(d.prompts.length), null]] : []),
+      ...(main ? [["Turns", `${d.turns.length}, ${d.prompts.length} your prompts`, null]] : []),
     ], (r) => ({ clientX: r.left + LBL, clientY: r.bottom }));
     svg.append(g);
   });
@@ -1184,7 +1425,7 @@ async function renderSession(host, profile, id) {
     const depth = Object.entries(s.depth_counts).sort().map(([k, n]) => `${n} at depth ${k}`).join(", ");
     const subUsd = d.threads.filter((x) => x.is_subagent).reduce((a, x) => a + (x.usd || 0), 0);
     $("s-tiles").replaceChildren(
-      tile("Claude time", fmtDur(s.claude_s), `${fmtDur(s.api_s)} model in flight · ${s.prompts} prompts`, { hero: true }),
+      tile("Claude time", fmtDur(s.claude_s), `${fmtDur(s.api_s)} model in flight · ${s.prompts} prompts, ${s.turns} turns`, { hero: true }),
       tile("Estimated cost", fmtUsd(s.usd), [s.subagents && `${fmtUsd(subUsd)} in subagents`, s.cost_usd != null && `Claude Code says ${fmtUsd(s.cost_usd)}`].filter(Boolean).join(" · ")),
       tile("Subagents spawned", fmtNum(s.subagents), s.subagents ? `${depth} · peak ${s.peak_concurrent_subagents} at once` : "none"),
       tile("Agent time", fmtDur(s.agent_s), s.subagents ? `summed over agents, ${s.forks} forks · ${s.background_agents} background` : ""),
@@ -1194,6 +1435,11 @@ async function renderSession(host, profile, id) {
     $("s-types").replaceChildren(...Object.entries(s.agent_types).sort((a, b) => b[1] - a[1])
       .map(([k, n]) => el("span", { class: "chip" }, el("b", {}, String(n)), " " + k)));
     const rows = timeline(d, tz);
+    table($("s-turns"), [
+      { h: "Started", v: (r) => r.ts, f: fmtWhen, nw: true }, col.text("Who", (r) => originName(r.origin)),
+      col.dur("Claude time", "claude_s"), col.dur("Agent time", "agent_s"), col.int("Subagents", (r) => r.subagents),
+      col.int("Tool calls", (r) => r.tool_calls), col.usd("Cost", (r) => r.usd), { h: "Timer", n: true, v: (r) => r.cc_turn_s, f: (x) => (x ? fmtDur(x) : "-") },
+    ], d.turns, { empty: "No turns recorded" });
     const t0 = s.first_ts || 0, off = (ts) => (ts == null ? "-" : "+" + fmtDur(ts - t0));
     const thead = el("tr", {}, ...["Thread", "Type", "Started", "Wall", "Busy", "Tools", "Output", "Cost", "Spawned"]
       .map((h, i) => el("th", { class: i >= 2 ? "n" : null }, h)));
@@ -1212,7 +1458,7 @@ async function renderSession(host, profile, id) {
   } catch (e) {
     $("s-title").textContent = "Session unavailable";
     $("s-meta").replaceChildren(el("span", { class: "err" }, "Error: " + e.message));
-    for (const id of ["s-tiles", "s-types", "s-axis", "s-timeline", "s-tree"]) $(id).replaceChildren();
+    for (const id of ["s-tiles", "s-types", "s-axis", "s-timeline", "s-turns", "s-tree"]) $(id).replaceChildren();
     $("s-tl-sub").textContent = "";
   }
 }
@@ -1242,8 +1488,8 @@ $("api-toc").addEventListener("click", (e) => {
 
 // ---- Routing ---------------------------------------------------------------------------
 
-const TABS = { overview: renderOverview, cost: renderCost, tools: renderTools, agents: renderAgents, sessions: renderSessions, hosts: renderHosts, api: renderApi };
-const TAB_TITLES = { overview: "Overview", cost: "Cost & tokens", tools: "Tools", agents: "Agents", sessions: "Sessions", hosts: "Hosts", api: "API" };
+const TABS = { overview: renderOverview, cost: renderCost, tools: renderTools, agents: renderAgents, turns: renderTurns, sessions: renderSessions, hosts: renderHosts, api: renderApi };
+const TAB_TITLES = { overview: "Overview", cost: "Cost & tokens", tools: "Tools", agents: "Agents", turns: "Turns", sessions: "Sessions", hosts: "Hosts", api: "API" };
 let lastView = null, fromTab = "sessions", seq = 0;
 
 async function route() {
@@ -1257,7 +1503,7 @@ async function route() {
   }
   // Filters scope the tabs, not a single session; the bucket only matters where there are charts over time.
   $("filters").hidden = !!m || name === "api";
-  $("group").hidden = !(name === "overview" || name === "cost");
+  $("group").hidden = !(name === "overview" || name === "cost" || name === "turns");
   const key = m ? h : name;
   if (key !== lastView) {
     window.scrollTo(0, 0);
@@ -1305,6 +1551,9 @@ seg("days", (v) => setFilter("days", v));
 seg("group", (v) => setFilter("group", v));
 seg("o-metric", (v) => { view.metric = v; pref.set("metric", v); syncControls(); route(); });
 seg("sort", (v) => { view.sort = v; view.limit = 200; syncControls(); route(); });
+seg("u-metric", (v) => { view.turnMetric = v; pref.set("turnMetric", v); syncControls(); route(); });
+seg("u-sort", (v) => { view.turnSort = v; syncControls(); route(); });
+seg("u-origin", (v) => { view.turnOrigin = v; syncControls(); route(); });
 for (const k of ["host", "profile", "model"]) $(k).addEventListener("change", () => setFilter(k, $(k).value));
 $("project").addEventListener("change", () => setFilter("project", $("project").value.trim()));
 $("project").addEventListener("keydown", (ev) => { if (ev.key === "Escape") { $("project").value = ""; setFilter("project", ""); } });
@@ -1317,7 +1566,7 @@ $("refresh").addEventListener("click", async () => {
   await fetch("/api/refresh", { method: "POST" });
   setTimeout(reload, 2500);
 });
-// Keys: 1-7 switch tabs, / searches sessions, Esc leaves a session.
+// Keys: 1-8 switch tabs, / searches sessions, Esc leaves a session.
 document.addEventListener("keydown", (ev) => {
   if (ev.ctrlKey || ev.metaKey || ev.altKey || ev.target.closest?.("input, select, textarea")) return;
   const names = Object.keys(TABS);

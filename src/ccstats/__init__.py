@@ -1,2 +1,2 @@
 """Cross-machine Claude Code usage stats."""
-__version__ = "0.1.2"
+__version__ = "0.2.1"

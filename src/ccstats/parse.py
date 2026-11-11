@@ -16,7 +16,7 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 # Bump when parse output changes, so cached files are parsed again.
-PARSER_VERSION = 3
+PARSER_VERSION = 4
 
 # Idle gaps shorter than this inside a thread's activity spans are bridged.
 SPAN_BRIDGE_S = 2.0
@@ -370,7 +370,7 @@ def parse_file(path: str, rel: str, settings: ParseSettings) -> Parsed:
         "parent_tool_use_id": meta.get("toolUseId"), "description": meta.get("description"),
         "first_ts": first_ts, "last_ts": last_ts,
         "title": info["title"] or info["ai_title"], "cc_version": info["version"], "branch": info["branch"],
-        "entrypoint": info["entrypoint"], "account": info["account"],
+        "entrypoint": info["entrypoint"], "account_id": info["account"],
         "model": max(models, key=models.get) if models else None,
         "n_prompts": sum(x["origin"] == "human" for x in turns), "n_turns": len(turns), "n_compactions": info["compactions"],
         "cost_usd": cost.get("totalCostUSD"),

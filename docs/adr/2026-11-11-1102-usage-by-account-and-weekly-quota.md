@@ -1,0 +1,11 @@
+# Usage is attributed to subscriptions by account; weekly quota use is estimated in list-price dollars
+
+**Status:** accepted
+
+**Context:** The two subscriptions, `claude` and `claudia`, don't map one-to-one onto config dirs: on spore and buckwheat `~/.claude` is logged in to `claudia`'s account (it kept working while `claude` sat at its weekly limit on Nov 9–11). A `profile` split therefore credits that usage to the wrong subscription. Claude Code reports neither the weekly quota nor usage against it in the transcripts; all they hold is the "weekly limit · resets <date>" message when a limit is hit.
+**Decision:**
+- A new dimension, `account`, names the subscription. A session takes the account whose config `ids` hold its account UUID (the `session-owner` record, which Claude Code writes from 2.1.314 on), else the one listing its `host/profile` in `profiles`, else the account named after its profile. It is assigned after every refresh, so editing `[accounts]` re-attributes everything without a re-parse.
+- Weekly windows run from one configured reset (`weekly_reset`, e.g. `Wed 23:00 UTC`) to the next. With no reset known, they are counted back from now in 7-day steps.
+- Quota use is a window's estimated cost at API list prices over a configured `weekly_quota_usd`. That figure comes from a window that ended at the limit: `claude` hit its limit on Nov 9 after $1,273 in the Nov 4–11 window. `claudia` has never hit its limit, but its 5-hour cap fell at the same cost as `claude`'s (~$190–255), so it gets the same figure.
+**Alternatives:** counting tokens instead of dollars — the limit falls on very different token totals depending on cache reads and model, while dollars at list prices weigh them roughly the way the limit seems to; detecting limit hits in transcripts to set the reset and quota automatically — possible later, but two hits are too few to fit a quota to.
+**Consequences:** the quota fraction is an estimate and only as good as the archive's coverage. Windows before mid-October miss CloudLab nodes that were never archived; the Oct 7–14 window hit the limit at only $529 recorded. Transcripts without a UUID from spore and buckwheat count as `claudia` even before `claudia` existed (~$60 in late September). The schema changed, so the database is rebuilt once (about 20 s).

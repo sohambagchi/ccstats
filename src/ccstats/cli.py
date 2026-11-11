@@ -17,7 +17,7 @@ def _compute(cfg, full=False, quiet=False):
     with store.compute_lock(cfg.data_dir):
         conn = store.connect(cfg.db)
         try:
-            stats = store.refresh(conn, cfg.archive, cfg.settings, full=full,
+            stats = store.refresh(conn, cfg.archive, cfg.settings, full=full, accounts=cfg.accounts,
                                   log=None if quiet else (lambda m: print(f"  {m}")))
         finally:
             conn.close()
@@ -30,7 +30,7 @@ def _filter(args, cfg) -> metrics.Filter:
     if args.days and not since:
         since = (datetime.now(ZoneInfo(cfg.timezone)).date() - timedelta(days=args.days - 1)).isoformat()
     return metrics.Filter(since=since, until=args.until, host=args.host, profile=args.profile,
-                          project=args.project, model=args.model)
+                          account=args.account, project=args.project, model=args.model)
 
 
 def _dur(s: float) -> str:
@@ -160,6 +160,7 @@ def main(argv=None):
         sp.add_argument("--until")
         sp.add_argument("--host")
         sp.add_argument("--profile")
+        sp.add_argument("--account", help="subscription, as named in config [accounts]")
         sp.add_argument("--project")
         sp.add_argument("--model")
         sp.add_argument("--json", action="store_true")

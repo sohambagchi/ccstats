@@ -382,11 +382,12 @@ td.tree .t { color: var(--muted); }
           <tr><td><code>until</code></td><td class="nw">YYYY-MM-DD</td><td>Last local day, inclusive.</td></tr>
           <tr><td><code>host</code></td><td class="nw">name</td><td>Machine the transcripts came from, e.g. <code>spore</code>.</td></tr>
           <tr><td><code>profile</code></td><td class="nw">name</td><td>Claude Code config dir on that host, e.g. <code>claude</code> for <code>~/.claude</code>.</td></tr>
+          <tr><td><code>account</code></td><td class="nw">name</td><td>Subscription, as named in the hub's config <code>[accounts]</code>. A session belongs to the account holding its account UUID, else the one listing its <code>host/profile</code>, else the account named after its profile.</td></tr>
           <tr><td><code>project</code></td><td class="nw">name</td><td>Project (working directory name). Subagents count toward their session's project.</td></tr>
           <tr><td><code>model</code></td><td class="nw">model id</td><td>Restricts tokens, cost and tool calls to responses from that model. Turns, prompts, time and session counts are not split by model.</td></tr>
         </tbody>
       </table></div>
-      <p>Valid values for <code>host</code>, <code>profile</code>, <code>project</code> and <code>model</code> come from <code>/api/dimensions</code>.
+      <p>Valid values for <code>host</code>, <code>profile</code>, <code>account</code>, <code>project</code> and <code>model</code> come from <code>/api/dimensions</code>.
         A malformed date is a 400.</p>
     </div>
 
@@ -397,7 +398,7 @@ td.tree .t { color: var(--muted); }
       <p>Stats per time bucket, optionally split by one dimension.</p>
       <ul>
         <li><code>group</code> = <code>day</code> (default), <code>week</code> (ISO week, <code>2026-W45</code>), <code>month</code> (<code>2026-11</code>) or <code>total</code></li>
-        <li><code>by</code> = <code>host</code>, <code>profile</code>, <code>project</code>, <code>model</code> or <code>origin</code>; each row then has that key.
+        <li><code>by</code> = <code>host</code>, <code>profile</code>, <code>account</code>, <code>project</code>, <code>model</code> or <code>origin</code>; each row then has that key.
           With <code>by=model</code> only token, cost and tool fields are filled. <code>by=origin</code> splits by who started the turn the work
           belongs to (see Units below); subagents count toward the turn that spawned them, and work no turn can be found for is <code>unknown</code>.</li>
         <li>Plus the filters.</li>
@@ -478,7 +479,7 @@ td.tree .t { color: var(--muted); }
         <li>Plus the filters, except <code>model</code>. A session is in range if any of it falls in range.</li>
       </ul>
       <pre class="ex" data-path="/api/sessions?days=7&amp;sort=subagents&amp;limit=5"></pre>
-      <p>Rows: <code>host</code>, <code>profile</code>, <code>session_id</code>, <code>project</code>, <code>cwd</code>, <code>title</code>,
+      <p>Rows: <code>host</code>, <code>profile</code>, <code>session_id</code>, <code>account</code>, <code>project</code>, <code>cwd</code>, <code>title</code>,
         <code>model</code>, <code>cc_version</code>, <code>branch</code>, <code>first_ts</code>, <code>last_ts</code>, <code>first_day</code>, <code>last_day</code>,
         <code>prompts</code>, <code>turns</code>, <code>compactions</code>, <code>subagents</code>, <code>agent_types</code>, <code>depth_counts</code>, <code>forks</code>,
         <code>background_agents</code>, <code>max_spawn_depth</code>, <code>peak_concurrent_subagents</code>, <code>api_calls</code>, <code>tool_calls</code>,
@@ -499,8 +500,19 @@ td.tree .t { color: var(--muted); }
         <code>turns</code> is <code>[{uuid, ts, origin, claude_s, api_s, agent_s, cc_turn_s, subagents, tool_calls, usd}]</code>, as in
         <code>/api/turns</code>; <code>prompts</code> is <code>[{ts, claude_s}]</code> for the human ones.</p>
 
+      <h3 id="api-quota">GET /api/quota</h3>
+      <p>Per account, estimated cost in each weekly-limit window and its share of the weekly quota. Filters do not apply.
+        Windows run from one reset to the next (config <code>weekly_reset</code>, e.g. <code>"Wed 23:00 UTC"</code>), or back from now in 7-day
+        steps when the reset time is unknown. The quota is <code>weekly_quota_usd</code> in the config: an estimate in dollars at API list prices,
+        e.g. the cost of a window that ended at the weekly limit.</p>
+      <pre class="ex" data-path="/api/quota"></pre>
+      <p>Rows: <code>account</code>, <code>weekly_reset</code> (null if unknown), <code>weekly_quota_usd</code>, <code>windows</code>
+        (<code>[{start, end, usd, output, tokens, api_calls, fraction, partial}]</code>, oldest first; <code>fraction</code> = <code>usd</code> / quota;
+        <code>partial</code> when the account started using it, or it ends, after its start or past now), <code>current</code> (the window holding now),
+        <code>mean_fraction</code> and <code>mean_fraction_last4</code> (over windows not <code>partial</code>), <code>full_windows</code>.</p>
+
       <h3 id="api-dimensions">GET /api/dimensions</h3>
-      <p>Values for the filters: <code>{"host": [...], "profile": [...], "project": [...], "model": [...], "first_day", "last_day"}</code>. No parameters.</p>
+      <p>Values for the filters: <code>{"host": [...], "profile": [...], "account": [...], "project": [...], "model": [...], "first_day", "last_day"}</code>. No parameters.</p>
       <pre class="ex" data-path="/api/dimensions"></pre>
 
       <h3 id="api-hosts">GET /api/hosts</h3>

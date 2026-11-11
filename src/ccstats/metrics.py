@@ -8,11 +8,11 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 
 GROUPS = ("day", "week", "month", "total")
-DIMENSIONS = ("host", "profile", "project")
+DIMENSIONS = ("host", "profile", "account", "project")
 
 
 @dataclass
@@ -21,6 +21,7 @@ class Filter:
     until: str | None = None      # last local day, inclusive
     host: str | None = None
     profile: str | None = None
+    account: str | None = None    # subscription (config [accounts]); a profile dir may be logged in to either
     project: str | None = None
     model: str | None = None      # applies to tokens and tool calls
 
@@ -271,7 +272,7 @@ def models(conn: sqlite3.Connection, f: Filter) -> list[dict]:
 
 def _turn_where(f: Filter) -> tuple[str, list]:
     """Filter for turn_stats `x` joined to its main thread `th` (model does not apply)."""
-    return Filter(f.since, f.until, f.host, f.profile, f.project).where("x")
+    return replace(f, model=None).where("x")
 
 
 TURN_SORTS = {"claude": "x.claude_s DESC", "agent": "x.agent_s DESC", "cost": "x.usd DESC", "recent": "x.ts DESC",
@@ -451,4 +452,67 @@ def cost_check(conn: sqlite3.Connection) -> list[dict]:
                         "output": (m.get("output", 0), u.get("outputTokens", 0)),
                         "cache_read": (m.get("cache_read", 0), u.get("cacheReadInputTokens", 0)),
                         "cache_write": (m.get("cache_write", 0), u.get("cacheCreationInputTokens", 0))})
+    return out
+
+
+WEEK_S = 7 * 86400
+_WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+def reset_time(spec: str) -> float:
+    """Timestamp of one weekly reset written as "Wed 23:00 UTC" (zone optional, default UTC).
+
+    Later resets are this plus whole weeks, so a zone with daylight saving drifts by an hour
+    half the year; UTC avoids that.
+    """
+    from zoneinfo import ZoneInfo
+    parts = spec.split()
+    hh, mm = (int(x) for x in parts[1].split(":"))
+    first = datetime(2026, 1, 5, hh, mm, tzinfo=ZoneInfo(parts[2] if len(parts) > 2 else "UTC"))  # a Monday
+    return (first + timedelta(days=_WEEKDAYS.index(parts[0][:3].lower()))).timestamp()
+
+
+def quota(conn: sqlite3.Connection, accounts: dict, now: float | None = None) -> list[dict]:
+    """Per account, usage in each weekly-limit window and its share of the estimated weekly quota.
+
+    Windows run from one reset to the next (config `weekly_reset`), or back from `now` in 7-day
+    steps when the reset time is unknown. Filters do not apply. `fraction` is estimated cost at
+    list prices over `weekly_quota_usd`; the averages cover only windows the account was in use for
+    from start to end (`partial` False).
+    """
+    import time as _time
+    now = now or _time.time()
+    names = {r[0] for r in conn.execute("SELECT DISTINCT account FROM threads WHERE account IS NOT NULL")}
+    out = []
+    for name in sorted(names):
+        a = accounts.get(name)
+        anchor = reset_time(a.weekly_reset) if a and a.weekly_reset else now
+        cap = a.weekly_quota_usd if a else None
+        # Integer division that floors for times before the anchor too.
+        per = {r["k"]: r for r in conn.execute("""
+            SELECT CAST((m.ts - :a) / :w + 100000 AS INT) - 100000 AS k, COUNT(*) AS api_calls, SUM(m.usd) AS usd,
+                   SUM(m.output) AS output, SUM(m.input + m.output + m.cache_read + m.cache_write) AS tokens,
+                   MIN(m.ts) AS first_ts
+            FROM u_messages m JOIN threads th ON th.path = m.path WHERE th.account = :n GROUP BY k""",
+            {"a": anchor, "w": WEEK_S, "n": name})}
+        if not per:
+            continue
+        first = min(r["first_ts"] for r in per.values())
+        lo, hi = min(per), int((now - anchor) // WEEK_S) - (1 if anchor == now else 0)
+        windows = []
+        for k in range(lo, max(hi, max(per)) + 1):
+            r = per.get(k)
+            start, end = anchor + k * WEEK_S, anchor + (k + 1) * WEEK_S
+            usd = (r["usd"] or 0.0) if r else 0.0
+            windows.append({"start": start, "end": end, "usd": round(usd, 2), "output": r["output"] if r else 0,
+                            "tokens": r["tokens"] if r else 0, "api_calls": r["api_calls"] if r else 0,
+                            "fraction": round(usd / cap, 4) if cap else None,
+                            "partial": start < first or end > now + 1})
+
+        def mean(ws):
+            return round(sum(w["fraction"] for w in ws) / len(ws), 4) if ws and cap else None
+        full = [w for w in windows if not w["partial"]]
+        out.append({"account": name, "weekly_reset": a.weekly_reset if a else None, "weekly_quota_usd": cap,
+                    "windows": windows, "current": next((w for w in windows if w["start"] <= now <= w["end"]), None),
+                    "mean_fraction": mean(full), "mean_fraction_last4": mean(full[-4:]), "full_windows": len(full)})
     return out

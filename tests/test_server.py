@@ -2,6 +2,7 @@
 import json
 import runpy
 import threading
+import time
 import urllib.request
 from pathlib import Path
 
@@ -136,3 +137,30 @@ def test_api_docs_cover_every_endpoint():
         assert f">{ep}</h3>" in tab, ep
         assert f"### {ep}\n" in doc, ep
     assert "/ccstats-query.py" in tab and "/ccstats-query.py" in doc
+
+
+def test_accounts_and_quota(cfg):
+    """Sessions take the account of their UUID, else of their host/profile, else their profile's name;
+    /api/quota puts each account's cost into windows between its weekly resets."""
+    from ccstats import metrics
+    conn = store.connect(cfg.db)
+    assert {r[0] for r in conn.execute("SELECT account FROM sessions")} == {"claude"}  # no [accounts]: profile name
+    cfg.accounts = {"work": config.Account(profiles=["spore/claude"], weekly_reset="Mon 00:00 UTC", weekly_quota_usd=10)}
+    assert store.assign_accounts(conn, cfg.accounts) > 0
+    conn.commit()
+    assert {r[0] for r in conn.execute("SELECT account FROM threads")} == {"work"}
+    f = metrics.Filter(account="work")
+    assert metrics.summary(conn, f, "total")[0]["prompts"] == 2
+    assert metrics.sessions(conn, f)[0]["account"] == "work"
+    total = metrics.summary(conn, metrics.Filter(), "total")[0]["cost"]["total"]
+    q = metrics.quota(conn, cfg.accounts)
+    assert [a["account"] for a in q] == ["work"]
+    assert abs(sum(w["usd"] for w in q[0]["windows"]) - total) < 0.01
+    for w in q[0]["windows"]:
+        assert w["end"] - w["start"] == metrics.WEEK_S and w["fraction"] == pytest.approx(w["usd"] / 10, abs=1e-3)
+        assert time.gmtime(w["start"]).tm_wday == 0 and time.gmtime(w["start"]).tm_hour == 0
+    cfg.accounts["work"].ids = ["acct-1"]
+    cfg.accounts = {"other": config.Account(ids=["acct-1"]), **cfg.accounts}
+    store.assign_accounts(conn, {"other": cfg.accounts["other"], "work": config.Account(profiles=["spore/claude"])})
+    assert "other" in {r[0] for r in conn.execute("SELECT account FROM threads")}  # the UUID wins over host/profile
+    conn.close()

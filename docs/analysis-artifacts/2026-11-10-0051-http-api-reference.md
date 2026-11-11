@@ -33,10 +33,11 @@ optional; without a date filter the whole archive is covered.
 | `until` | YYYY-MM-DD | Last local day, inclusive. |
 | `host` | name | Machine the transcripts came from, e.g. `spore`. |
 | `profile` | name | Claude Code config dir on that host, e.g. `claude` for `~/.claude`. |
+| `account` | name | Subscription, as named in the hub's config `[accounts]`. A session belongs to the account holding its account UUID, else the one listing its `host/profile`, else the account named after its profile. |
 | `project` | name | Project (working directory name). Subagents count toward their session's project. |
 | `model` | model id | Restricts tokens, cost and tool calls to responses from that model. Turns, prompts, time and session counts are not split by model. |
 
-Valid values for `host`, `profile`, `project` and `model` come from `/api/dimensions`. A
+Valid values for `host`, `profile`, `account`, `project` and `model` come from `/api/dimensions`. A
 malformed date is a 400.
 
 ## Endpoints
@@ -46,7 +47,7 @@ malformed date is a 400.
 Stats per time bucket, optionally split by one dimension.
 
 - `group` = `day` (default), `week` (ISO week, `2026-W45`), `month` (`2026-11`) or `total`
-- `by` = `host`, `profile`, `project`, `model` or `origin`; each row then has that key. With `by=model` only token, cost and tool fields are filled. `by=origin` splits by who started the turn the work belongs to (see Units); subagents count toward the turn that spawned them, and work no turn can be found for is `unknown`.
+- `by` = `host`, `profile`, `account`, `project`, `model` or `origin`; each row then has that key. With `by=model` only token, cost and tool fields are filled. `by=origin` splits by who started the turn the work belongs to (see Units); subagents count toward the turn that spawned them, and work no turn can be found for is `unknown`.
 - Plus the filters.
 
 ```sh
@@ -161,7 +162,7 @@ Main sessions active in the range, each with its subagents folded in.
 curl -s 'http://spore:8420/api/sessions?days=7&sort=subagents&limit=5'
 ```
 
-Rows: `host`, `profile`, `session_id`, `project`, `cwd`, `title`, `model`, `cc_version`,
+Rows: `host`, `profile`, `session_id`, `account`, `project`, `cwd`, `title`, `model`, `cc_version`,
 `branch`, `first_ts`, `last_ts`, `first_day`, `last_day`, `prompts`, `turns`, `compactions`,
 `subagents`, `agent_types`, `depth_counts`, `forks`, `background_agents`, `max_spawn_depth`,
 `peak_concurrent_subagents`, `api_calls`, `tool_calls`, `tool_errors`, `claude_s`, `api_s`,
@@ -187,9 +188,27 @@ following `parent`. `turns` is `[{uuid, ts, origin, claude_s, api_s, agent_s, cc
 subagents, tool_calls, usd}]`, as in `/api/turns`; `prompts` is `[{ts, claude_s}]` for the human
 ones.
 
+### GET /api/quota
+
+Per account, estimated cost in each weekly-limit window and its share of the weekly quota.
+Filters do not apply. Windows run from one reset to the next (config `weekly_reset`, e.g.
+`"Wed 23:00 UTC"`), or back from now in 7-day steps when the reset time is unknown. The quota is
+`weekly_quota_usd` in the config: an estimate in dollars at API list prices, e.g. the cost of a
+window that ended at the weekly limit.
+
+```sh
+curl -s 'http://spore:8420/api/quota'
+```
+
+Rows: `account`, `weekly_reset` (null if unknown), `weekly_quota_usd`, `windows`
+(`[{start, end, usd, output, tokens, api_calls, fraction, partial}]`, oldest first; `fraction` =
+`usd` / quota; `partial` when the account started using it, or it ends, after its start or past
+now), `current` (the window holding now), `mean_fraction` and `mean_fraction_last4` (over windows
+not `partial`), `full_windows`.
+
 ### GET /api/dimensions
 
-Values for the filters: `{"host": [...], "profile": [...], "project": [...], "model": [...], "first_day", "last_day"}`.
+Values for the filters: `{"host": [...], "profile": [...], "account": [...], "project": [...], "model": [...], "first_day", "last_day"}`.
 No parameters.
 
 ```sh

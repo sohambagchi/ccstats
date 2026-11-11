@@ -17,9 +17,11 @@ Console: https://claude.ai/artifact/SfziVxpWd83cbuxQEFcy1c
 - [2026-11-09-2016-estimated-cost-at-list-prices](adr/2026-11-09-2016-estimated-cost-at-list-prices.md) — dollar estimate per response from a local price table
 - [2026-11-09-2050-subagents-in-session-project](adr/2026-11-09-2050-subagents-in-session-project.md) — a subagent's project is its session's
 - [2026-11-10-2227-turns-partition-the-work](adr/2026-11-10-2227-turns-partition-the-work.md) — every turn, not just human prompts, partitions the work; subagents belong to their spawning turn
+- [2026-11-11-1102-usage-by-account-and-weekly-quota](adr/2026-11-11-1102-usage-by-account-and-weekly-quota.md) — usage attributed to subscriptions by account UUID or host/profile; quota use in list-price dollars per weekly window
 
 ## Changes
 
+- [2026-11-11-1102-accounts-and-quota-api](changelog/2026-11-11-1102-accounts-and-quota-api.md) — `account` dimension and `/api/quota`
 - [2026-11-10-2240-turns-tab](changelog/2026-11-10-2240-turns-tab.md) — Turns tab: who starts the work, when, longest turns, timer check; cost by effort and skill
 - [2026-11-10-2227-turns-in-data-and-api](changelog/2026-11-10-2227-turns-in-data-and-api.md) — turns with origins, effort and skill; turns, heatmap, timecheck and cost endpoints
 - [2026-11-10-0051-api-tab](changelog/2026-11-10-0051-api-tab.md) — API reference tab in the dashboard

@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from . import pricing
 from .parse import ParseSettings, Parsed, iso_week, local_day, parse_file, thread_identity
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 # Bump when rollup_session derives something new from rows already stored: the next
 # refresh rolls up every session again instead of rebuilding the database.
 ROLLUP_VERSION = "3"
@@ -39,9 +39,10 @@ CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, size INT, mtime REAL, ke
 CREATE TABLE IF NOT EXISTS threads(
   path TEXT PRIMARY KEY, host TEXT, profile TEXT, project TEXT, cwd TEXT, session_id TEXT, agent_id TEXT,
   is_subagent INT, agent_type TEXT, spawn_depth INT, parent_tool_use_id TEXT, description TEXT,
-  first_ts REAL, last_ts REAL, title TEXT, cc_version TEXT, branch TEXT, entrypoint TEXT, account TEXT,
+  first_ts REAL, last_ts REAL, title TEXT, cc_version TEXT, branch TEXT, entrypoint TEXT, account_id TEXT,
   model TEXT, n_prompts INT, n_turns INT, n_compactions INT, cost_usd REAL, cost_state TEXT,
-  is_fork INT, background INT, spans TEXT, parent_path TEXT, root_turn TEXT);
+  is_fork INT, background INT, spans TEXT, parent_path TEXT, root_turn TEXT,
+  account TEXT);  -- subscription name, set by assign_accounts
 CREATE INDEX IF NOT EXISTS threads_session ON threads(host, profile, session_id);
 """ + "".join(f"""
 CREATE TABLE IF NOT EXISTS {t}({cols}, PRIMARY KEY(path, {', '.join(key)}));
@@ -62,7 +63,7 @@ CREATE INDEX IF NOT EXISTS turn_stats_day ON turn_stats(day);
 CREATE INDEX IF NOT EXISTS turn_stats_session ON turn_stats(host, profile, session_id);
 -- One row per main session with its subagents folded in; rebuilt only when one of its files changes.
 CREATE TABLE IF NOT EXISTS sessions(
-  host TEXT, profile TEXT, session_id TEXT, path TEXT, project TEXT, cwd TEXT, title TEXT, model TEXT,
+  host TEXT, profile TEXT, session_id TEXT, account TEXT, path TEXT, project TEXT, cwd TEXT, title TEXT, model TEXT,
   cc_version TEXT, branch TEXT, first_ts REAL, last_ts REAL, first_day TEXT, last_day TEXT, prompts INT, turns INT,
   compactions INT, cost_usd REAL, subagents INT, agent_types TEXT, depth_counts TEXT, forks INT,
   background_agents INT, max_spawn_depth INT, peak_concurrent_subagents INT, api_calls INT, tool_calls INT,
@@ -262,7 +263,7 @@ def rollup_session(conn: sqlite3.Connection, host: str, profile: str, session_id
         d = str(s["spawn_depth"] or 1)
         depths[d] = depths.get(d, 0) + 1
     row = {
-        "host": host, "profile": profile, "session_id": session_id, "path": main["path"], "project": main["project"],
+        "host": host, "profile": profile, "session_id": session_id, "account": main["account"], "path": main["path"], "project": main["project"],
         "cwd": main["cwd"], "title": main["title"], "model": main["model"], "cc_version": main["cc_version"],
         "branch": main["branch"], "first_ts": main["first_ts"], "last_ts": main["last_ts"],
         "first_day": local_day(main["first_ts"], tz) if main["first_ts"] else None,
@@ -308,7 +309,27 @@ def _rollup_turns(conn, main_path: str, sub_paths: list[str], roots: dict, key: 
         conn.execute(f"INSERT OR REPLACE INTO turn_stats({','.join(row)}) VALUES({','.join('?' * len(row))})", list(row.values()))
 
 
-def refresh(conn: sqlite3.Connection, archive: str, settings: ParseSettings, full: bool = False, log=None) -> dict:
+def assign_accounts(conn: sqlite3.Connection, accounts: dict) -> int:
+    """Name the subscription of every session's threads and sessions row; return how many rows changed.
+
+    A session's account UUID (from any of its threads) picks the account listing it in `ids`;
+    without one, the account listing its `host/profile`; otherwise the profile name.
+    """
+    by_id = {i: name for name, a in accounts.items() for i in a.ids}
+    by_dir = {d: name for name, a in accounts.items() for d in a.profiles}
+    before = conn.total_changes
+    rows = conn.execute("SELECT host, profile, session_id, MAX(account_id) FROM threads GROUP BY host, profile, session_id")
+    conn.executemany("""UPDATE threads SET account = ? WHERE host = ? AND profile = ? AND session_id = ?
+                        AND account IS NOT ?""",
+                     [(name, h, p, s, name) for h, p, s, uuid in rows
+                      for name in [by_id.get(uuid) or by_dir.get(f"{h}/{p}") or p]])
+    conn.execute("""UPDATE sessions SET account = (SELECT account FROM threads th WHERE th.path = sessions.path)
+                    WHERE account IS NOT (SELECT account FROM threads th WHERE th.path = sessions.path)""")
+    return conn.total_changes - before
+
+
+def refresh(conn: sqlite3.Connection, archive: str, settings: ParseSettings, full: bool = False, log=None,
+            accounts: dict | None = None) -> dict:
     """Parse files that are new or changed since their last parse; drop rows of vanished files.
 
     Everything downstream of the changed files (de-duplicated rows, per-thread and
@@ -357,10 +378,11 @@ def refresh(conn: sqlite3.Connection, archive: str, settings: ParseSettings, ful
         for s in sorted(sessions):
             rollup_session(conn, *s, tz)
         stats["sessions"] = len(sessions)
+        stats["account_changes"] = assign_accounts(conn, accounts or {})
         now = str(time.time())
         conn.execute("INSERT OR REPLACE INTO meta VALUES('computed_at', ?)", (now,))
         conn.execute("INSERT OR REPLACE INTO meta VALUES('timezone', ?)", (settings.tz,))
-        if stats["parsed"] or stats["removed"] or repriced or rerolled:
+        if stats["parsed"] or stats["removed"] or repriced or rerolled or stats["account_changes"]:
             conn.execute("INSERT OR REPLACE INTO meta VALUES('data_version', ?)", (now,))
     stats["seconds"] = round(time.time() - t0, 2)
     return stats

@@ -12,6 +12,15 @@
     claude = "~/.claude"
     claudia = "~/.claudia"
 
+    [accounts.claude]                     # a subscription; usage is split by these names
+    ids = ["cd7fc0f6-..."]                # Claude account UUIDs (the transcripts' session-owner record)
+    weekly_reset = "Wed 23:00 UTC"        # when its weekly limit resets: weekday, time, zone
+    weekly_quota_usd = 1273               # estimated weekly limit, in $ at API list prices
+
+    [accounts.claudia]
+    ids = ["f4872d10-..."]
+    profiles = ["spore/claude"]           # host/profile dirs logged in to it, for transcripts with no UUID
+
     [[pull]]                              # archives the hub fetches over ssh
     name = "utah"
     kind = "cloudlab"                     # remote path holds <node>/<profile>/projects
@@ -54,6 +63,16 @@ class Pull:
 
 
 @dataclass
+class Account:
+    """A subscription. A session belongs to the account whose `ids` hold its account UUID, else the one
+    listing its `host/profile`, else an account named after its profile."""
+    ids: list[str] = field(default_factory=list)
+    profiles: list[str] = field(default_factory=list)
+    weekly_reset: str | None = None      # "Wed 23:00 UTC"; None: weeks are counted back from now
+    weekly_quota_usd: float | None = None
+
+
+@dataclass
 class Config:
     data_dir: str
     listen: str
@@ -64,6 +83,7 @@ class Config:
     allow: list[str]
     profiles: dict[str, str]
     pulls: list[Pull]
+    accounts: dict[str, Account] = field(default_factory=dict)
     path: str | None = None
 
     @property
@@ -105,5 +125,9 @@ def load(path: str | None = None) -> Config:
         allow=list(raw.get("allow", [])),
         profiles=dict(raw.get("profiles") or {"claude": "~/.claude", "claudia": "~/.claudia"}),
         pulls=pulls,
+        accounts={name: Account(ids=list(a.get("ids", [])), profiles=list(a.get("profiles", [])),
+                                weekly_reset=a.get("weekly_reset"),
+                                weekly_quota_usd=float(a["weekly_quota_usd"]) if "weekly_quota_usd" in a else None)
+                  for name, a in (raw.get("accounts") or {}).items()},
         path=path if os.path.exists(path) else None,
     )

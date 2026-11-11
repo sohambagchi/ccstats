@@ -87,7 +87,7 @@ class Refresher:
                 with store.compute_lock(self.cfg.data_dir):
                     conn = store.connect(self.cfg.db)
                     try:
-                        st = store.refresh(conn, self.cfg.archive, self.cfg.settings,
+                        st = store.refresh(conn, self.cfg.archive, self.cfg.settings, accounts=self.cfg.accounts,
                                            log=lambda m: print(f"refresh:   {m}", flush=True))
                         self.last = {**st, "at": time.time()}
                     finally:
@@ -175,12 +175,12 @@ def _filter(q: dict, tz: ZoneInfo) -> metrics.Filter:
         if d:
             date.fromisoformat(d)  # reject malformed days early
     return metrics.Filter(since=since, until=until, host=one("host"), profile=one("profile"),
-                          project=one("project"), model=one("model"))
+                          account=one("account"), project=one("project"), model=one("model"))
 
 
 ENDPOINTS = {
     "/api/health": "server version, last refresh",
-    "/api/summary": "per-bucket stats incl. estimated cost; group=day|week|month|total, by=host|profile|project|model|origin",
+    "/api/summary": "per-bucket stats incl. estimated cost; group=day|week|month|total, by=host|profile|account|project|model|origin",
     "/api/tools": "tool calls by name and Bash executable; top=N",
     "/api/cost": "tokens and estimated cost (usd) by=model|effort|skill|origin",
     "/api/models": "tokens and estimated cost (usd) by model; same as /api/cost?by=model",
@@ -189,7 +189,8 @@ ENDPOINTS = {
     "/api/timecheck": "Claude time per turn next to Claude Code's own turn timer",
     "/api/sessions": "main sessions with subagents folded in; limit=N, sort=recent|subagents|claude|agent|output|cost",
     "/api/session": "one session's agent tree, per-thread stats and activity spans; host, profile, id",
-    "/api/dimensions": "values for host/profile/project/model filters",
+    "/api/quota": "per account, estimated cost in each weekly-limit window and its share of the weekly quota; no filters",
+    "/api/dimensions": "values for host/profile/account/project/model filters",
     "/api/hosts": "per host/profile coverage, collection status, registered push hosts",
     "POST /api/refresh": "re-parse changed archive files now",
     "/ccstats-query.py": "command-line client for this API, preset to this server",
@@ -197,7 +198,7 @@ ENDPOINTS = {
 REMOTE_SCRIPTS = {"/push.sh": "text/x-shellscript; charset=utf-8",
                   "/cloudlab-setup.sh": "text/x-shellscript; charset=utf-8",
                   "/ccstats-query.py": "text/x-python; charset=utf-8"}
-FILTER_DOC = "filters on every stats endpoint: days=N or since=YYYY-MM-DD&until=YYYY-MM-DD, host, profile, project, model"
+FILTER_DOC = "filters on every stats endpoint: days=N or since=YYYY-MM-DD&until=YYYY-MM-DD, host, profile, account, project, model"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -320,6 +321,8 @@ class Handler(BaseHTTPRequestHandler):
             return d
         if path == "/api/dimensions":
             return metrics.dimensions(conn)
+        if path == "/api/quota":
+            return metrics.quota(conn, self.server.cfg.accounts)
         return None
 
     def _origin(self) -> str:

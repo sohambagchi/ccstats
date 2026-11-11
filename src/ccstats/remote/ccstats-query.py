@@ -178,6 +178,18 @@ def show_tools(d):
     table(["bash program", "calls", "errors", "background"], [[r["exe"], r["calls"], r["errors"], r["background"]] for r in d["bash"]])
 
 
+def show_quota(rows):
+    pct = lambda x: "-" if x is None else f"{x * 100:.0f}%"  # noqa: E731
+    for a in rows:
+        print(f"{a['account']}: resets {a['weekly_reset'] or 'unknown (7-day windows back from now)'}, "
+              f"quota ~{usd(a['weekly_quota_usd']) if a['weekly_quota_usd'] else 'not set'}; "
+              f"mean {pct(a['mean_fraction'])} over {a['full_windows']} full windows, last 4 {pct(a['mean_fraction_last4'])}")
+        table(["window from", "cost", "of quota", "output", "tokens", ""],
+              [[time.strftime("%Y-%m-%d %a %H:%M", time.localtime(w["start"])), usd(w["usd"]), pct(w["fraction"]),
+                num(w["output"]), num(w["tokens"]), "partial" if w["partial"] else ""] for w in a["windows"]])
+        print()
+
+
 def show_session(d):
     s = d["session"]
     print(f"{s['title'] or s['session_id']}\n{s['host']}/{s['profile']}  {s['project']}  {s['cwd']}  {s['session_id']}")
@@ -205,7 +217,7 @@ def main(argv=None):
     g.add_argument("--days", type=int, help="last N local days, today included")
     g.add_argument("--since", help="first day, YYYY-MM-DD")
     g.add_argument("--until", help="last day, YYYY-MM-DD")
-    for k in ("host", "profile", "project", "model"):
+    for k in ("host", "profile", "account", "project", "model"):
         g.add_argument("--" + k)
 
     p = argparse.ArgumentParser(prog="ccstats-query", description="Query a ccstats server's HTTP API.")
@@ -216,7 +228,7 @@ def main(argv=None):
     sub.add_parser("endpoints", help="what the server says it serves")
     s = sub.add_parser("summary", parents=[filters], help="stats per day/week/month or in total")
     s.add_argument("--group", choices=["day", "week", "month", "total"], default="day")
-    s.add_argument("--by", choices=["host", "profile", "project", "model", "origin"])
+    s.add_argument("--by", choices=["host", "profile", "account", "project", "model", "origin"])
     sub.add_parser("models", parents=[filters], help="tokens and estimated cost per model")
     co = sub.add_parser("cost", parents=[filters], help="tokens and estimated cost per model, effort, skill or turn origin")
     co.add_argument("--by", choices=["model", "effort", "skill", "origin"], default="model")
@@ -235,7 +247,8 @@ def main(argv=None):
     one.add_argument("host")
     one.add_argument("profile")
     one.add_argument("id")
-    sub.add_parser("dimensions", help="known hosts, profiles, projects, models and day range")
+    sub.add_parser("quota", help="per account, estimated share of the weekly quota used in each weekly window")
+    sub.add_parser("dimensions", help="known hosts, profiles, accounts, projects, models and day range")
     sub.add_parser("hosts", help="archive coverage and collection status")
     sub.add_parser("refresh", help="ask the server to re-parse changed transcripts now")
     raw = sub.add_parser("get", help="GET any path; parameters as key=value")
@@ -244,7 +257,7 @@ def main(argv=None):
     a = p.parse_args(argv)
 
     c = Client(a.server)
-    f = {k: getattr(a, k, None) for k in ("days", "since", "until", "host", "profile", "project", "model")}
+    f = {k: getattr(a, k, None) for k in ("days", "since", "until", "host", "profile", "account", "project", "model")}
     try:
         if a.cmd == "refresh":
             out, show = c.refresh(), None
@@ -267,6 +280,8 @@ def main(argv=None):
             out, show = c.get("/api/" + a.cmd, **f), {"heatmap": show_heatmap, "timecheck": show_timecheck}[a.cmd]
         elif a.cmd == "sessions":
             out, show = c.get("/api/sessions", limit=a.limit, sort=a.sort, **f), show_sessions
+        elif a.cmd == "quota":
+            out, show = c.get("/api/quota"), show_quota
         elif a.cmd == "session":
             out, show = c.get("/api/session", host=a.host, profile=a.profile, id=a.id), show_session
         else:

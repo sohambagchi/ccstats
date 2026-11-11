@@ -58,7 +58,7 @@ def test_main_session(tmp_path, settings):
     p = parse_file(path, MAIN, settings)
 
     assert p.thread["host"] == "spore" and p.thread["profile"] == "claude" and p.thread["session_id"] == "s1"
-    assert p.thread["project"] == "proj" and p.thread["title"] == "my session" and p.thread["account"] == "acct-1"
+    assert p.thread["project"] == "proj" and p.thread["title"] == "my session" and p.thread["account_id"] == "acct-1"
     assert p.thread["n_prompts"] == 2
 
     # Seven real API responses; m1's two blocks count once, the synthetic error not at all.

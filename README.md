@@ -5,7 +5,7 @@ Last 30 days, as of 2026-11-11:
 
 | Claude time | Est. cost | Sessions | Subagents | Tool calls | Output tokens |
 |---|---|---|---|---|---|
-| 383h36m | $5,700 | 129 | 563 | 60,486 | 40.5M |
+| 383h43m | $5,702 | 130 | 563 | 60,518 | 40.6M |
 <!-- stats:end -->
 
 Claude Code usage across machines: sessions, subagents, tokens, tool calls and Claude time,
